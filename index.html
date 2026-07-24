@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>日直勤務表 自動作成アプリ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+  <h1>日直勤務表 自動作成アプリ</h1>
+  <p class="subtitle">職員名簿・ルールから日直勤務表（土日祝日の当番表）を自動作成します。データはブラウザのlocalStorageに保存されます（サーバー不要）。</p>
+</header>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="staff">名簿管理</button>
+  <button class="tab-btn" data-tab="rules">ルール設定</button>
+  <button class="tab-btn" data-tab="generate">勤務表作成</button>
+  <button class="tab-btn" data-tab="history">履歴・確認</button>
+  <button class="tab-btn" data-tab="help">使い方</button>
+</nav>
+
+<main>
+  <!-- ============ 名簿管理 ============ -->
+  <section id="panel-staff" class="tab-panel active">
+    <div class="card">
+      <h2>職員を追加</h2>
+      <form id="staff-form" class="grid-form">
+        <label>職員番号<input type="text" id="st-number" placeholder="例：1023"></label>
+        <label>氏名<input type="text" id="st-name" required placeholder="例：山田太郎"></label>
+        <label>級
+          <select id="st-level">
+            <option value="senior">係長級</option>
+            <option value="junior">主事級</option>
+          </select>
+        </label>
+        <label>所属課<input type="text" id="st-dept" required placeholder="例：総務課"></label>
+        <label>採用年月日（新規採用職員の6ヶ月除外に使用・任意）<input type="date" id="st-hire"></label>
+        <label class="checkbox-label"><input type="checkbox" id="st-citizen"> 市民課経験あり（主事級の組合せで優先）</label>
+        <label class="checkbox-label"><input type="checkbox" id="st-active" checked> 対象に含める（休職等の場合は外す）</label>
+        <button type="submit" class="btn-primary">追加する</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>職員名簿</h2>
+        <div class="row-actions">
+          <span id="staff-count" class="muted"></span>
+          <button id="staff-import-btn" class="btn-secondary">CSV取込</button>
+          <button id="staff-export-btn" class="btn-secondary">CSV書出</button>
+        </div>
+      </div>
+      <div id="staff-import-box" class="hidden">
+        <p class="hint">ヘッダー行付きCSV：番号,氏名,級(係長級/主事級),所属課,市民課経験(TRUE/FALSE),採用年月日(YYYY-MM-DD)</p>
+        <textarea id="staff-import-text" rows="6" placeholder="番号,氏名,級,所属課,市民課経験,採用年月日"></textarea>
+        <div class="row-actions">
+          <button id="staff-import-run" class="btn-primary">取り込む</button>
+          <button id="staff-import-cancel" class="btn-secondary">閉じる</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>番号</th><th>氏名</th><th>級</th><th>所属課</th><th>市民課経験</th><th>採用日</th><th>対象</th><th></th></tr>
+          </thead>
+          <tbody id="staff-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ルール設定 ============ -->
+  <section id="panel-rules" class="tab-panel">
+    <div class="card">
+      <h2>基本設定</h2>
+      <div class="grid-form">
+        <label>最低間隔日数（前回勤務日から空ける日数）<input type="number" id="opt-mingap" value="120" min="0"></label>
+        <label>新規採用職員の除外期間（ヶ月）<input type="number" id="opt-newhire" value="6" min="0"></label>
+        <label>年末年始・GWの遡り回数（同じ職員を避ける過去の回数）<input type="number" id="opt-lookback" value="2" min="0"></label>
+      </div>
+      <button id="opt-save" class="btn-primary">保存する</button>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>月別の課除外ルール</h2>
+        <span class="hint">例：10・11月はイベントが多いので商工観光課・広報係を除外／12・1月はふるさと納税繁忙期のためブランド推進係を除外</span>
+      </div>
+      <form id="monthrule-form" class="grid-form">
+        <label>対象月（カンマ区切り 例：10,11）<input type="text" id="mr-months" placeholder="10,11"></label>
+        <label>除外する課（カンマ区切り）<input type="text" id="mr-depts" placeholder="商工観光課,広報係"></label>
+        <label>備考<input type="text" id="mr-note" placeholder="イベントが多いため"></label>
+        <button type="submit" class="btn-primary">追加する</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>対象月</th><th>除外する課</th><th>備考</th><th></th></tr></thead>
+          <tbody id="monthrule-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>行事による当日除外</h2>
+        <span class="hint">例：全国太鼓フェスティバル（10月）→商工観光課、産業まつり（11月）→商工観光課・農林課・水産課</span>
+      </div>
+      <form id="event-form" class="grid-form">
+        <label>開始日<input type="date" id="ev-start" required></label>
+        <label>終了日（単日の場合は空欄）<input type="date" id="ev-end"></label>
+        <label>除外する課（カンマ区切り）<input type="text" id="ev-depts" required placeholder="商工観光課"></label>
+        <label>行事名<input type="text" id="ev-label" placeholder="全国太鼓フェスティバル"></label>
+        <button type="submit" class="btn-primary">追加する</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>日付</th><th>除外する課</th><th>行事名</th><th></th></tr></thead>
+          <tbody id="event-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 勤務表作成 ============ -->
+  <section id="panel-generate" class="tab-panel">
+    <div class="card">
+      <h2>1. 対象期間・指定日</h2>
+      <div class="grid-form">
+        <label>期間ラベル（例：R8.4-R8.9）<input type="text" id="gen-label" placeholder="2026年度前期"></label>
+        <label>開始日<input type="date" id="gen-start"></label>
+        <label>終了日<input type="date" id="gen-end"></label>
+      </div>
+      <button id="gen-list-dates" class="btn-secondary">土日・祝日を自動抽出</button>
+      <p class="hint" id="gen-dates-summary"></p>
+      <div class="table-wrap small-table">
+        <table>
+          <thead><tr><th>日付</th><th>曜日</th><th>祝日</th><th>対象</th></tr></thead>
+          <tbody id="gen-dates-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. 勤務表を作成</h2>
+      <button id="gen-run" class="btn-primary">勤務表を作成する</button>
+      <p class="hint">既存の履歴（前回・前々回の勤務、120日ルール等）を踏まえて自動で割り当てます。「要確認」の日は候補者不足や同一課の組合せなど、手動での見直しが必要です。</p>
+      <div id="gen-warning-summary"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>日付</th><th>曜日</th><th>祝日等</th><th>係長級</th><th>主事級</th><th>状態</th></tr></thead>
+          <tbody id="gen-result-tbody"></tbody>
+        </table>
+      </div>
+      <div class="row-actions">
+        <button id="gen-confirm" class="btn-primary" disabled>この内容で確定・履歴に保存</button>
+        <button id="gen-export" class="btn-secondary" disabled>CSVで書き出す</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 履歴・確認 ============ -->
+  <section id="panel-history" class="tab-panel">
+    <div class="card">
+      <div class="card-header-row">
+        <h2>確定済み履歴</h2>
+        <div class="row-actions">
+          <span id="history-count" class="muted"></span>
+          <button id="history-export-btn" class="btn-secondary">CSV書出</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>期間</th><th>日付</th><th>曜日</th><th>係長級</th><th>主事級</th><th>状態</th><th></th></tr></thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>職員ごとの担当状況（名簿との突合確認）</h2>
+      <p class="hint">マニュアルの「#N/A確認」に相当します。一度も日直に入っていない対象職員がいないかを確認できます。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>氏名</th><th>級</th><th>所属課</th><th>担当回数</th><th>直近の勤務日</th></tr></thead>
+          <tbody id="check-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 使い方 ============ -->
+  <section id="panel-help" class="tab-panel">
+    <div class="card">
+      <h2>使い方</h2>
+      <ol class="help-list">
+        <li><strong>名簿管理</strong>タブで対象職員（補佐級以下、外局・秘書は除く）を登録します。部課長級・外局・秘書はあらかじめ名簿に含めないでください。CSV取込にも対応しています。</li>
+        <li><strong>ルール設定</strong>タブで、最低間隔日数（既定120日）・新規採用職員の除外期間（既定6ヶ月）、月別の課除外ルール、行事による当日除外を設定します。</li>
+        <li><strong>勤務表作成</strong>タブで対象期間を入力し「土日・祝日を自動抽出」を押すと指定日が一覧化されます。不要な日は対象から外せます。</li>
+        <li>「勤務表を作成する」を押すと、係長級1名・主事級1名の組合せを自動で割り当てます。市民課経験者を優先し、同一課の組合せ・120日未満の再登板・年末年始や大型連休の連続担当を避けます。</li>
+        <li>「要確認」の行は候補者が不足しているなどの理由で自動割当できなかった日です。理由を確認し、名簿やルールを調整するか、必要に応じて手動で調整してください。</li>
+        <li>内容を確認したら「確定・履歴に保存」を押すと履歴に記録され、次回作成時の間隔日数計算や年末年始の重複回避に自動的に反映されます（マニュアルの「過去の履歴をコピペする」作業が不要になります）。</li>
+        <li><strong>履歴・確認</strong>タブで、これまでの割当や職員ごとの担当回数を確認できます。CSVで書き出して印刷・共有できます。</li>
+      </ol>
+      <h2>ルールの出典</h2>
+      <ul class="help-list">
+        <li>補佐級以下が対象。外局・秘書は除く。新規採用職員は採用から6ヶ月経過後から対象。</li>
+        <li>係長級と主事級の組合せが基本（市民課経験者と主事の組合せを優先）。同じ職場同士は組み合わせない。</li>
+        <li>各行事の当日は担当課を除外する。10・11月はイベントが多いため商工観光課・広報係を除外、12・1月はふるさと納税繁忙期のためブランド推進係を除外。</li>
+        <li>年末年始・ゴールデンウィークは前回・前々回と同じ職員にならないよう配慮する。</li>
+        <li>前回勤務日から120日以上間隔を空ける。</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>
