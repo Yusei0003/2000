@@ -47,6 +47,7 @@
         <h2>職員名簿</h2>
         <div class="row-actions">
           <span id="staff-count" class="muted"></span>
+          <button id="staff-xlsx-btn" class="btn-secondary">Excel名簿を取込</button>
           <button id="staff-import-btn" class="btn-secondary">CSV取込</button>
           <button id="staff-export-btn" class="btn-secondary">CSV書出</button>
         </div>
@@ -66,6 +67,23 @@
           </thead>
           <tbody id="staff-tbody"></tbody>
         </table>
+      </div>
+    </div>
+
+    <div class="card hidden" id="staff-xlsx-box">
+      <h2>Excel名簿データの取り込み</h2>
+      <p class="hint">人事給与システム等から出力した名簿（番号・氏名・職名・所属名・係名・採用日等の列を含む .xlsx）をそのまま取り込めます。まず職名ごとに「係長級／主事級／取り込まない」を指定してください（内容は次回の取り込み時にも記憶されます）。</p>
+      <input type="file" id="staff-xlsx-input" accept=".xlsx">
+      <div id="staff-xlsx-summary" class="hint"></div>
+      <div class="table-wrap small-table">
+        <table>
+          <thead><tr><th>職名</th><th>人数</th><th>取り込み方法</th></tr></thead>
+          <tbody id="staff-xlsx-mapping-tbody"></tbody>
+        </table>
+      </div>
+      <div class="row-actions" style="margin-top:12px">
+        <button id="staff-xlsx-confirm" class="btn-primary" disabled>この内容で取り込む</button>
+        <button id="staff-xlsx-cancel" class="btn-secondary">閉じる</button>
       </div>
     </div>
   </section>
@@ -162,6 +180,17 @@
   <!-- ============ 履歴・確認 ============ -->
   <section id="panel-history" class="tab-panel">
     <div class="card">
+      <h2>Excel勤務実績データの取り込み</h2>
+      <p class="hint">過去の日直勤務表（.xlsx／日付・係長級の職員番号氏名・主事級の職員番号氏名の列を含む）をそのまま取り込めます。名簿に登録のない職員番号は履歴専用の職員として自動登録され、担当状況の確認に利用できます。同じ日付が既にある場合は取り込んだ内容で上書きします。</p>
+      <input type="file" id="history-xlsx-input" accept=".xlsx">
+      <div id="history-xlsx-summary" class="hint"></div>
+      <div class="row-actions hidden" id="history-xlsx-actions">
+        <button id="history-xlsx-confirm" class="btn-primary">この内容で取り込む</button>
+        <button id="history-xlsx-cancel" class="btn-secondary">取消</button>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-header-row">
         <h2>確定済み履歴</h2>
         <div class="row-actions">
@@ -179,10 +208,10 @@
 
     <div class="card">
       <h2>職員ごとの担当状況（名簿との突合確認）</h2>
-      <p class="hint">マニュアルの「#N/A確認」に相当します。一度も日直に入っていない対象職員がいないかを確認できます。</p>
+      <p class="hint">マニュアルの「#N/A確認」に相当します。一度も日直に入っていない対象職員がいないかを確認できます。「履歴を見る」で、その職員が過去に勤務した日付を一覧で確認できます。</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>氏名</th><th>級</th><th>所属課</th><th>担当回数</th><th>直近の勤務日</th></tr></thead>
+          <thead><tr><th>番号</th><th>氏名</th><th>級</th><th>所属課</th><th>対象</th><th>担当回数</th><th>直近の勤務日</th><th></th></tr></thead>
           <tbody id="check-tbody"></tbody>
         </table>
       </div>
@@ -216,6 +245,7 @@
 
 <div id="toast" class="toast"></div>
 
+<script src="vendor/xlsx.core.min.js"></script>
 <script src="app.js"></script>
 <script src="ui.js"></script>
 </body>
