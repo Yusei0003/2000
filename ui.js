@@ -10,6 +10,7 @@ const KEY_FISCAL_EVENTS = 'duty_fiscal_events_v1';
 const KEY_SETTINGS = 'duty_settings_v2';
 const KEY_HISTORY = 'duty_history_v2';
 const KEY_TITLE_LEVEL_MAP = 'duty_title_level_map_v1';
+const KEY_LEAVES = 'duty_leaves_v1';
 
 const DEFAULT_SETTINGS = {
   minGapDays: 120,
@@ -159,6 +160,7 @@ let settings = { ...DEFAULT_SETTINGS, ...load(KEY_SETTINGS, {}) };
 if (!Array.isArray(settings.standingExcludedDepts)) settings.standingExcludedDepts = [];
 let history = load(KEY_HISTORY, []);
 let titleLevelMap = load(KEY_TITLE_LEVEL_MAP, {});
+let leaves = load(KEY_LEAVES, []);
 
 let draftDates = []; // 勤務表作成タブの作業中の指定日
 let draftResults = []; // 作成された勤務表（未確定）
@@ -258,6 +260,13 @@ function renderStaffTable() {
       <td>${escapeHtml(s.number)}</td>
       <td>${escapeHtml(s.name)}</td>
       <td>${LEVEL_LABEL[s.level]}</td>
+      <td>
+        <select class="gender-select" data-id="${s.id}">
+          <option value="" ${!s.gender ? 'selected' : ''}>未設定</option>
+          <option value="M" ${s.gender === 'M' ? 'selected' : ''}>男性</option>
+          <option value="F" ${s.gender === 'F' ? 'selected' : ''}>女性</option>
+        </select>
+      </td>
       <td>${escapeHtml(s.title || '')}</td>
       <td>${escapeHtml(s.dept)}</td>
       <td>${escapeHtml(s.section || '')}</td>
@@ -284,6 +293,13 @@ function renderStaffTable() {
       staff = staff.filter((s) => s.id !== btn.dataset.del);
       save(KEY_STAFF, staff);
       renderStaffTable();
+    });
+  });
+  tbody.querySelectorAll('.gender-select').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const s = staffById(sel.dataset.id);
+      s.gender = sel.value || null;
+      save(KEY_STAFF, staff);
     });
   });
   tbody.querySelectorAll('.citizen-toggle').forEach((cb) => {
@@ -320,6 +336,7 @@ function initStaffForm() {
       number: document.getElementById('st-number').value.trim(),
       name: document.getElementById('st-name').value.trim(),
       level: document.getElementById('st-level').value,
+      gender: document.getElementById('st-gender').value || null,
       title: document.getElementById('st-title').value.trim(),
       dept: document.getElementById('st-dept').value.trim(),
       section: document.getElementById('st-section').value.trim(),
@@ -457,6 +474,14 @@ function levelFromRank(rank) {
   if (n >= 1000) return 'exclude';
   return null;
 }
+/** 性別（I列）を判定する。1:男性 0:女性。文字列の「男」「女」にも対応。判定できない場合はnull */
+function genderFromValue(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const s = String(v).trim();
+  if (s === '1' || s === '男') return 'M';
+  if (s === '0' || s === '女') return 'F';
+  return null;
+}
 function parseStaffWorkbook(workbook) {
   for (const sheetName of workbook.SheetNames) {
     const rows = sheetRows(workbook.Sheets[sheetName]);
@@ -470,6 +495,7 @@ function parseStaffWorkbook(workbook) {
     const idxTitle = col('職名');
     const idxDeptCode = col('所属CD');
     const idxDept = col('所属名');
+    const idxGender = col('性別');
     const idxSection = col('係名');
     const idxSideJob = col('兼職');
     const idxCategory = col('区分名');
@@ -486,6 +512,7 @@ function parseStaffWorkbook(workbook) {
         title: idxTitle >= 0 ? String(r[idxTitle] || '').trim() : '',
         deptCode: idxDeptCode >= 0 && r[idxDeptCode] !== null && r[idxDeptCode] !== undefined ? String(r[idxDeptCode]).trim() : null,
         dept: idxDept >= 0 ? String(r[idxDept] || '').trim() : '',
+        gender: idxGender >= 0 ? genderFromValue(r[idxGender]) : null,
         section: idxSection >= 0 ? String(r[idxSection] || '').trim() : '',
         sideJob: idxSideJob >= 0 ? String(r[idxSideJob] || '').trim() : '',
         category: idxCategory >= 0 ? String(r[idxCategory] || '').trim() : '',
@@ -572,8 +599,10 @@ function initStaffXlsxImport() {
       staffXlsxRows = rows;
       const excludedByCategory = rows.filter((r) => isExcludedCategory(r.category)).length;
       const excludedByRank = rows.filter((r) => !isExcludedCategory(r.category) && levelFromRank(r.rank) === 'exclude').length;
+      const genderUnknown = rows.filter((r) => !isExcludedCategory(r.category) && levelFromRank(r.rank) !== 'exclude' && !r.gender).length;
       document.getElementById('staff-xlsx-summary').textContent =
-        `${rows.length} 件のデータを検出しました（区分による除外対象 ${excludedByCategory} 件・ランクによる除外対象 ${excludedByRank} 件）。内容を確認してください。`;
+        `${rows.length} 件のデータを検出しました（区分による除外対象 ${excludedByCategory} 件・ランクによる除外対象 ${excludedByRank} 件）。内容を確認してください。` +
+        (genderUnknown ? `　※性別（I列）が読み取れない職員が ${genderUnknown} 件あります。日直のペアは性別ルールで割り当てるため、該当職員は割当対象になりません。` : '');
       renderStaffXlsxMapping();
     });
   });
@@ -610,6 +639,7 @@ function initStaffXlsxImport() {
         }
         existing.dept = r.dept;
         existing.deptCode = r.deptCode;
+        existing.gender = r.gender;
         existing.section = r.section;
         existing.sideJob = r.sideJob;
         existing.hireDate = r.hireDate || existing.hireDate;
@@ -624,6 +654,7 @@ function initStaffXlsxImport() {
           title: r.title,
           dept: r.dept,
           deptCode: r.deptCode,
+          gender: r.gender,
           section: r.section,
           sideJob: r.sideJob,
           citizenExp: false,
@@ -669,6 +700,50 @@ function initOptions() {
     settings.pairLookbackYears = Number(document.getElementById('opt-pair-lookback').value) || 0;
     save(KEY_SETTINGS, settings);
     showToast('設定を保存しました');
+  });
+}
+
+/** 育休等による除外期間：職員番号・開始日・終了日の一覧表示 */
+function renderLeaveTable() {
+  const tbody = document.getElementById('leave-tbody');
+  tbody.innerHTML = leaves
+    .map((lv) => {
+      const s = staff.find((x) => String(x.number) === String(lv.staffNumber));
+      return `
+    <tr>
+      <td>${escapeHtml(lv.staffNumber)}</td>
+      <td>${s ? escapeHtml(s.name) : '<span class="muted">（名簿に該当職員なし）</span>'}</td>
+      <td>${escapeHtml(lv.startDate)}</td>
+      <td>${escapeHtml(lv.endDate)}</td>
+      <td><button class="btn-danger" data-del="${lv.id}">削除</button></td>
+    </tr>`;
+    })
+    .join('');
+  tbody.querySelectorAll('[data-del]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      leaves = leaves.filter((lv) => lv.id !== btn.dataset.del);
+      save(KEY_LEAVES, leaves);
+      renderLeaveTable();
+    });
+  });
+}
+function initLeaveForm() {
+  renderLeaveTable();
+  document.getElementById('leave-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const staffNumber = document.getElementById('lv-number').value.trim();
+    const startDate = document.getElementById('lv-start').value;
+    const endDate = document.getElementById('lv-end').value;
+    if (!staffNumber || !startDate || !endDate) return;
+    if (startDate > endDate) {
+      alert('終了日は開始日以降の日付にしてください。');
+      return;
+    }
+    leaves.push({ id: uid('lv'), staffNumber, startDate, endDate });
+    save(KEY_LEAVES, leaves);
+    renderLeaveTable();
+    e.target.reset();
+    showToast('育休等の除外期間を登録しました');
   });
 }
 
@@ -973,6 +1048,7 @@ function initGenerateRun() {
       specialLookback: settings.specialLookback,
       pairLookbackYears: settings.pairLookbackYears,
       standingExcludedDepts: settings.standingExcludedDepts,
+      leaves,
     });
     renderGenResultTable();
     showToast('勤務表を作成しました');
@@ -1425,6 +1501,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initHandoverExport();
   initHistoryPdf();
   initOptions();
+  initLeaveForm();
   initStandingRuleForm();
   initMonthRuleForm();
   initEventForm();

@@ -7,6 +7,7 @@
 
 const WEEKDAY_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
 const LEVEL_LABEL = { senior: '係長級', junior: '主事級' };
+const GENDER_LABEL = { M: '男性', F: '女性' };
 
 /* ------------------------------------------------------------
  * 日付ユーティリティ
@@ -214,6 +215,21 @@ function standingExcludedReason(staff, standingExcludedDepts) {
   return null;
 }
 
+/** その日の必須性別（半期の前半＝女性、後半＝男性）。4-6月・10-12月は女性、7-9月・1-3月は男性 */
+function requiredGenderForDate(date) {
+  const month = date.getMonth() + 1;
+  return [4, 5, 6, 10, 11, 12].includes(month) ? 'F' : 'M';
+}
+/** 育休等の登録期間内で日直の対象外となる職員か（職員番号で照合） */
+function isOnLeave(staff, date, leaves) {
+  if (!Array.isArray(leaves) || !staff.number) return false;
+  return leaves.some((lv) => {
+    if (!lv || String(lv.staffNumber) !== String(staff.number)) return false;
+    if (!lv.startDate || !lv.endDate) return false;
+    return date >= parseISO(lv.startDate) && date <= parseISO(lv.endDate);
+  });
+}
+
 /* ------------------------------------------------------------
  * 割当アルゴリズム
  * ------------------------------------------------------------ */
@@ -289,6 +305,7 @@ function generateAssignments({
   specialLookback,
   pairLookbackYears = 2,
   standingExcludedDepts = [],
+  leaves = [], // [{staffNumber, startDate, endDate}] 育休等による除外期間
 }) {
   const countMap = new Map();
   const lastDateMap = new Map();
@@ -338,10 +355,13 @@ function generateAssignments({
       });
     }
 
+    const requiredGender = requiredGenderForDate(date);
     const eligibleBase = (level) =>
       activeStaff.filter(
         (s) =>
           s.level === level &&
+          s.gender === requiredGender &&
+          !isOnLeave(s, date, leaves) &&
           ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
           !bannedBySpecial.has(s.id) &&
           passesNewHire(s, date, newHireMonths) &&
@@ -376,8 +396,8 @@ function generateAssignments({
     const chosenJunior = pair ? pair.junior : null;
 
     const reasons = [];
-    if (!seniorPool.length) reasons.push('係長級の候補者がいません');
-    if (!juniorPool.length) reasons.push('主事級の候補者がいません');
+    if (!seniorPool.length) reasons.push(`係長級（${GENDER_LABEL[requiredGender]}）の候補者がいません`);
+    if (!juniorPool.length) reasons.push(`主事級（${GENDER_LABEL[requiredGender]}）の候補者がいません`);
     if (chosenSenior && chosenJunior) {
       if (relaxedStage >= 3) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
       if (relaxedStage >= 2) reasons.push('同一課の組合せになっています');
@@ -440,11 +460,14 @@ if (typeof module !== 'undefined' && module.exports) {
     isQualified,
     isStandingExcluded,
     standingExcludedReason,
+    requiredGenderForDate,
+    isOnLeave,
     buildPairLastFiscalYear,
     isPairBanned,
     pairKey,
     generateAssignments,
     WEEKDAY_LABEL,
+    GENDER_LABEL,
     LEVEL_LABEL,
   };
 }
