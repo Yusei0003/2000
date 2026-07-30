@@ -184,9 +184,9 @@ function effectiveCitizenExp(staff) {
   if (Array.isArray(staff.deptHistory) && staff.deptHistory.some((d) => d && d.includes('市民課'))) return true;
   return false;
 }
-/** 資格要件（対象役職 または 市民課経験者）を満たすか */
-function isQualified(staff, qualifyingTitles) {
-  if (staff.title && qualifyingTitles && qualifyingTitles.some((t) => staff.title.includes(t))) return true;
+/** 資格要件（係長級 または 市民課経験者）を満たすか */
+function isQualified(staff) {
+  if (staff.level === 'senior') return true;
   return effectiveCitizenExp(staff);
 }
 function isSecretarySection(staff) {
@@ -226,10 +226,10 @@ function passesGap(staffId, date, minGapDays, lastDateMap) {
   if (!last) return true;
   return diffDays(last, date) >= minGapDays;
 }
-function sortCandidates(list, countMap, lastDateMap, qualifyingTitles) {
+function sortCandidates(list, countMap, lastDateMap) {
   return [...list].sort((a, b) => {
-    const qa = isQualified(a, qualifyingTitles) ? 0 : 1;
-    const qb = isQualified(b, qualifyingTitles) ? 0 : 1;
+    const qa = isQualified(a) ? 0 : 1;
+    const qb = isQualified(b) ? 0 : 1;
     if (qa !== qb) return qa - qb;
     const countDiff = (countMap.get(a.id) || 0) - (countMap.get(b.id) || 0);
     if (countDiff !== 0) return countDiff;
@@ -269,7 +269,7 @@ function findPair(seniorPool, juniorPool, opts) {
     for (const j of juniorPool) {
       if (opts.avoidSameDept && s.dept && j.dept && s.dept === j.dept) continue;
       if (opts.avoidPairRepeat && isPairBanned(s.id, j.id, opts.pairLastFY, opts.currentFY, opts.pairLookbackYears)) continue;
-      if (opts.requireQualification && !isQualified(s, opts.qualifyingTitles) && !isQualified(j, opts.qualifyingTitles)) continue;
+      if (opts.requireQualification && !isQualified(s) && !isQualified(j)) continue;
       return { senior: s, junior: j };
     }
   }
@@ -286,7 +286,6 @@ function generateAssignments({
   newHireMonths,
   specialLookback,
   pairLookbackYears = 2,
-  qualifyingTitles = [],
   standingExcludedDepts = [],
 }) {
   const countMap = new Map();
@@ -347,10 +346,10 @@ function generateAssignments({
           passesGap(s.id, date, minGapDays, lastDateMap)
       );
 
-    const seniorPool = sortCandidates(eligibleBase('senior'), countMap, lastDateMap, qualifyingTitles);
-    const juniorPool = sortCandidates(eligibleBase('junior'), countMap, lastDateMap, qualifyingTitles);
+    const seniorPool = sortCandidates(eligibleBase('senior'), countMap, lastDateMap);
+    const juniorPool = sortCandidates(eligibleBase('junior'), countMap, lastDateMap);
 
-    const pairOpts = { pairLastFY, currentFY, pairLookbackYears, qualifyingTitles };
+    const pairOpts = { pairLastFY, currentFY, pairLookbackYears };
     let pair = null;
     let relaxedStage = 0;
     const stages = [
@@ -378,7 +377,7 @@ function generateAssignments({
     if (!seniorPool.length) reasons.push('係長級の候補者がいません');
     if (!juniorPool.length) reasons.push('主事級の候補者がいません');
     if (chosenSenior && chosenJunior) {
-      if (relaxedStage >= 3) reasons.push('資格要件（対象役職・市民課経験者）を満たす職員がいません');
+      if (relaxedStage >= 3) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
       if (relaxedStage >= 2) reasons.push('同一課の組合せになっています');
       if (relaxedStage >= 1) reasons.push('過去のペアと重複しています');
     }

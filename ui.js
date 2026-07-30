@@ -16,7 +16,6 @@ const DEFAULT_SETTINGS = {
   newHireMonths: 6,
   specialLookback: 2,
   pairLookbackYears: 2,
-  qualifyingTitles: ['補佐', '副主幹', '係長', '主任', '主任主事', '主任技師'],
   standingExcludedDepts: [],
 };
 const DEFAULT_MONTH_RULES = [
@@ -157,7 +156,6 @@ let staff = load(KEY_STAFF, []);
 let monthRules = load(KEY_MONTH_RULES, DEFAULT_MONTH_RULES);
 let fiscalEvents = load(KEY_FISCAL_EVENTS, []);
 let settings = { ...DEFAULT_SETTINGS, ...load(KEY_SETTINGS, {}) };
-if (!Array.isArray(settings.qualifyingTitles)) settings.qualifyingTitles = DEFAULT_SETTINGS.qualifyingTitles.slice();
 if (!Array.isArray(settings.standingExcludedDepts)) settings.standingExcludedDepts = [];
 let history = load(KEY_HISTORY, []);
 let titleLevelMap = load(KEY_TITLE_LEVEL_MAP, {});
@@ -188,6 +186,9 @@ function initTabs() {
         renderEventDeptOptions();
         renderEventTable();
       }
+      if (btn.dataset.tab === 'rules') {
+        renderStandingRuleList();
+      }
     });
   });
 }
@@ -198,12 +199,26 @@ function initTabs() {
 function staffById(id) {
   return staff.find((s) => s.id === id);
 }
-function uniqueDepts() {
-  const set = new Set();
+/** 名簿に登録済みの所属を、所属CD順に並べて返す（{name, code}の配列）。CDが無い所属は末尾に名前順で並ぶ */
+function sortedDeptList() {
+  const codeByName = new Map();
   staff.forEach((s) => {
-    if (s.dept) set.add(s.dept);
+    if (!s.dept) return;
+    if (!codeByName.has(s.dept) || (s.deptCode && !codeByName.get(s.dept))) {
+      codeByName.set(s.dept, s.deptCode || null);
+    }
   });
-  return [...set].sort();
+  return [...codeByName.entries()]
+    .map(([name, code]) => ({ name, code }))
+    .sort((a, b) => {
+      if (a.code && b.code) return String(a.code).localeCompare(String(b.code), 'ja', { numeric: true });
+      if (a.code && !b.code) return -1;
+      if (!a.code && b.code) return 1;
+      return a.name.localeCompare(b.name, 'ja');
+    });
+}
+function uniqueDepts() {
+  return sortedDeptList().map((d) => d.name);
 }
 function renderStaffTable() {
   const tbody = document.getElementById('staff-tbody');
@@ -407,6 +422,7 @@ function parseStaffWorkbook(workbook) {
     const idxName = col('氏名');
     if (idxNumber === -1 || idxName === -1) continue;
     const idxTitle = col('職名');
+    const idxDeptCode = col('所属CD');
     const idxDept = col('所属名');
     const idxSection = col('係名');
     const idxSideJob = col('兼職');
@@ -422,6 +438,7 @@ function parseStaffWorkbook(workbook) {
         number: String(r[idxNumber]).trim(),
         name: String(r[idxName]).trim(),
         title: idxTitle >= 0 ? String(r[idxTitle] || '').trim() : '',
+        deptCode: idxDeptCode >= 0 && r[idxDeptCode] !== null && r[idxDeptCode] !== undefined ? String(r[idxDeptCode]).trim() : null,
         dept: idxDept >= 0 ? String(r[idxDept] || '').trim() : '',
         section: idxSection >= 0 ? String(r[idxSection] || '').trim() : '',
         sideJob: idxSideJob >= 0 ? String(r[idxSideJob] || '').trim() : '',
@@ -546,6 +563,7 @@ function initStaffXlsxImport() {
           existing.deptHistory.push(existing.dept);
         }
         existing.dept = r.dept;
+        existing.deptCode = r.deptCode;
         existing.section = r.section;
         existing.sideJob = r.sideJob;
         existing.hireDate = r.hireDate || existing.hireDate;
@@ -559,6 +577,7 @@ function initStaffXlsxImport() {
           level,
           title: r.title,
           dept: r.dept,
+          deptCode: r.deptCode,
           section: r.section,
           sideJob: r.sideJob,
           citizenExp: false,
@@ -607,60 +626,37 @@ function initOptions() {
   });
 }
 
-function renderChipList(containerId, items, onRemove) {
-  const el = document.getElementById(containerId);
-  if (!items.length) {
-    el.innerHTML = '<span class="empty-hint">未登録</span>';
+/** 常時除外する所属：名簿に登録済みの所属（所属CD順）をチェックボックスで表示する */
+function renderStandingRuleList() {
+  const el = document.getElementById('standing-rule-list');
+  const depts = sortedDeptList();
+  if (!depts.length) {
+    el.innerHTML = '<span class="empty-hint">名簿に所属が登録されていません</span>';
     return;
   }
-  el.innerHTML = items
-    .map((item, i) => `<span class="chip">${escapeHtml(item)}<button type="button" data-idx="${i}">×</button></span>`)
+  el.innerHTML = depts
+    .map(
+      ({ name }) => `
+    <label class="checkbox-label" style="gap:6px">
+      <input type="checkbox" class="standing-dept-toggle" value="${escapeHtml(name)}" ${settings.standingExcludedDepts.includes(name) ? 'checked' : ''}>
+      ${escapeHtml(name)}
+    </label>`
+    )
     .join('');
-  el.querySelectorAll('button[data-idx]').forEach((btn) => {
-    btn.addEventListener('click', () => onRemove(Number(btn.dataset.idx)));
-  });
-}
-function renderTitleRuleList() {
-  renderChipList('title-rule-list', settings.qualifyingTitles, (idx) => {
-    settings.qualifyingTitles.splice(idx, 1);
-    save(KEY_SETTINGS, settings);
-    renderTitleRuleList();
-  });
-}
-function renderStandingRuleList() {
-  renderChipList('standing-rule-list', settings.standingExcludedDepts, (idx) => {
-    settings.standingExcludedDepts.splice(idx, 1);
-    save(KEY_SETTINGS, settings);
-    renderStandingRuleList();
-    renderStaffTable();
-  });
-}
-function initTitleRuleForm() {
-  renderTitleRuleList();
-  document.getElementById('title-rule-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const input = document.getElementById('tr-title');
-    const v = input.value.trim();
-    if (!v || settings.qualifyingTitles.includes(v)) return;
-    settings.qualifyingTitles.push(v);
-    save(KEY_SETTINGS, settings);
-    renderTitleRuleList();
-    input.value = '';
+  el.querySelectorAll('.standing-dept-toggle').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        if (!settings.standingExcludedDepts.includes(cb.value)) settings.standingExcludedDepts.push(cb.value);
+      } else {
+        settings.standingExcludedDepts = settings.standingExcludedDepts.filter((d) => d !== cb.value);
+      }
+      save(KEY_SETTINGS, settings);
+      renderStaffTable();
+    });
   });
 }
 function initStandingRuleForm() {
   renderStandingRuleList();
-  document.getElementById('standing-rule-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const input = document.getElementById('sr-dept');
-    const v = input.value.trim();
-    if (!v || settings.standingExcludedDepts.includes(v)) return;
-    settings.standingExcludedDepts.push(v);
-    save(KEY_SETTINGS, settings);
-    renderStandingRuleList();
-    renderStaffTable();
-    input.value = '';
-  });
 }
 
 function renderMonthRuleTable() {
@@ -930,7 +926,6 @@ function initGenerateRun() {
       newHireMonths: settings.newHireMonths,
       specialLookback: settings.specialLookback,
       pairLookbackYears: settings.pairLookbackYears,
-      qualifyingTitles: settings.qualifyingTitles,
       standingExcludedDepts: settings.standingExcludedDepts,
     });
     renderGenResultTable();
@@ -1383,7 +1378,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initHandoverExport();
   initHistoryPdf();
   initOptions();
-  initTitleRuleForm();
   initStandingRuleForm();
   initMonthRuleForm();
   initEventForm();
