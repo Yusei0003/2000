@@ -211,8 +211,7 @@ function renderStaffTable() {
     .map((s) => {
       const standing = isStandingExcluded(s, settings.standingExcludedDepts);
       const reason = standing ? standingExcludedReason(s, settings.standingExcludedDepts) : '';
-      const citizen = effectiveCitizenExp(s);
-      const citizenLabel = citizen ? (s.citizenExp ? '○（手動）' : '○（自動）') : '';
+      const autoCitizen = !s.citizenExp && effectiveCitizenExp(s);
       return `
     <tr>
       <td>${escapeHtml(s.number)}</td>
@@ -221,7 +220,12 @@ function renderStaffTable() {
       <td>${escapeHtml(s.title || '')}</td>
       <td>${escapeHtml(s.dept)}</td>
       <td>${escapeHtml(s.section || '')}</td>
-      <td>${citizenLabel}</td>
+      <td>
+        <label class="checkbox-label" style="gap:4px">
+          <input type="checkbox" class="citizen-toggle" data-id="${s.id}" ${s.citizenExp ? 'checked' : ''}>
+          ${autoCitizen ? '<span class="muted" style="font-size:11px">（自動判定あり）</span>' : ''}
+        </label>
+      </td>
       <td>${standing ? escapeHtml(reason) : ''}</td>
       <td>${escapeHtml(s.hireDate || '')}</td>
       <td>${s.active !== false ? '○' : '除外'}</td>
@@ -234,6 +238,14 @@ function renderStaffTable() {
     btn.addEventListener('click', () => {
       if (!confirm('この職員を削除しますか？（履歴の表示名は残ります）')) return;
       staff = staff.filter((s) => s.id !== btn.dataset.del);
+      save(KEY_STAFF, staff);
+      renderStaffTable();
+    });
+  });
+  tbody.querySelectorAll('.citizen-toggle').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const s = staffById(cb.dataset.id);
+      s.citizenExp = cb.checked;
       save(KEY_STAFF, staff);
       renderStaffTable();
     });
@@ -373,6 +385,17 @@ function suggestLevelForTitle(title) {
   if (/主事|主任|技師|技手|保健師|看護師|保育士|栄養士|用務員|技能員/.test(t)) return 'junior';
   return 'exclude';
 }
+/** ランク（P列）から級を判定する。1〜399:課長級以上(除外) 400〜600:係長級 601〜999:主事級 1000以降:会計年度任用職員等(除外)。
+ *  ランクが数値として読めない場合は null（判定不能）を返す。 */
+function levelFromRank(rank) {
+  if (rank === null || rank === undefined || rank === '' || isNaN(rank)) return null;
+  const n = Number(rank);
+  if (n >= 1 && n <= 399) return 'exclude';
+  if (n >= 400 && n <= 600) return 'senior';
+  if (n >= 601 && n <= 999) return 'junior';
+  if (n >= 1000) return 'exclude';
+  return null;
+}
 function parseStaffWorkbook(workbook) {
   for (const sheetName of workbook.SheetNames) {
     const rows = sheetRows(workbook.Sheets[sheetName]);
@@ -388,6 +411,7 @@ function parseStaffWorkbook(workbook) {
     const idxSection = col('係名');
     const idxSideJob = col('兼職');
     const idxCategory = col('区分名');
+    const idxRank = col('ランク');
     const idxHire = col('採用日');
     const idxRetire = col('退職日');
     const idxActive = col('在職');
@@ -402,6 +426,7 @@ function parseStaffWorkbook(workbook) {
         section: idxSection >= 0 ? String(r[idxSection] || '').trim() : '',
         sideJob: idxSideJob >= 0 ? String(r[idxSideJob] || '').trim() : '',
         category: idxCategory >= 0 ? String(r[idxCategory] || '').trim() : '',
+        rank: idxRank >= 0 && r[idxRank] !== null && r[idxRank] !== undefined && r[idxRank] !== '' ? Number(r[idxRank]) : null,
         hireDate: idxHire >= 0 ? excelValueToISO(r[idxHire]) : null,
         retireDate: idxRetire >= 0 ? excelValueToISO(r[idxRetire]) : null,
         activeFlag: idxActive >= 0 ? r[idxActive] : null,
@@ -409,27 +434,46 @@ function parseStaffWorkbook(workbook) {
   }
   return null;
 }
+/** ランクで級が判定できる行にはマッピング不要。判定できない行のみ職名マッピングの対象とする */
+function needsTitleMapping(r) {
+  return !isExcludedCategory(r.category) && levelFromRank(r.rank) === null;
+}
+function resolveImportLevel(r) {
+  const byRank = levelFromRank(r.rank);
+  if (byRank !== null) return byRank;
+  const titleKey = r.title || '（職名なし）';
+  return titleLevelMap[titleKey] || suggestLevelForTitle(r.title);
+}
 function renderStaffXlsxMapping() {
   const tbody = document.getElementById('staff-xlsx-mapping-tbody');
+  const mappingBox = document.getElementById('staff-xlsx-mapping-box');
+  const noMappingNote = document.getElementById('staff-xlsx-no-mapping-note');
   const titleCounts = new Map();
   staffXlsxRows.forEach((r) => {
-    if (isExcludedCategory(r.category)) return; // 区分による除外者は職名マッピング対象にも出さない
+    if (!needsTitleMapping(r)) return; // ランクで判定できる行はマッピング対象外
     const key = r.title || '（職名なし）';
     titleCounts.set(key, (titleCounts.get(key) || 0) + 1);
   });
   const titles = [...titleCounts.keys()].sort();
-  tbody.innerHTML = titles
-    .map((title) => {
-      const current = titleLevelMap[title] || suggestLevelForTitle(title);
-      const opt = (value, label) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`;
-      return `
+  if (!titles.length) {
+    mappingBox.classList.add('hidden');
+    noMappingNote.classList.remove('hidden');
+  } else {
+    mappingBox.classList.remove('hidden');
+    noMappingNote.classList.add('hidden');
+    tbody.innerHTML = titles
+      .map((title) => {
+        const current = titleLevelMap[title] || suggestLevelForTitle(title);
+        const opt = (value, label) => `<option value="${value}" ${current === value ? 'selected' : ''}>${label}</option>`;
+        return `
     <tr>
       <td>${escapeHtml(title)}</td>
       <td>${titleCounts.get(title)}</td>
       <td><select class="title-level-select" data-title="${escapeHtml(title)}">${opt('senior', '係長級')}${opt('junior', '主事級')}${opt('exclude', '取り込まない')}</select></td>
     </tr>`;
-    })
-    .join('');
+      })
+      .join('');
+  }
   document.getElementById('staff-xlsx-confirm').disabled = false;
 }
 function isExcludedCategory(category) {
@@ -443,6 +487,8 @@ function initStaffXlsxImport() {
     document.getElementById('staff-xlsx-box').classList.add('hidden');
     document.getElementById('staff-xlsx-input').value = '';
     document.getElementById('staff-xlsx-mapping-tbody').innerHTML = '';
+    document.getElementById('staff-xlsx-mapping-box').classList.remove('hidden');
+    document.getElementById('staff-xlsx-no-mapping-note').classList.add('hidden');
     document.getElementById('staff-xlsx-summary').textContent = '';
     document.getElementById('staff-xlsx-confirm').disabled = true;
     staffXlsxRows = null;
@@ -462,8 +508,9 @@ function initStaffXlsxImport() {
       }
       staffXlsxRows = rows;
       const excludedByCategory = rows.filter((r) => isExcludedCategory(r.category)).length;
+      const excludedByRank = rows.filter((r) => !isExcludedCategory(r.category) && levelFromRank(r.rank) === 'exclude').length;
       document.getElementById('staff-xlsx-summary').textContent =
-        `${rows.length} 件のデータを検出しました（うち区分による除外対象 ${excludedByCategory} 件）。職名ごとの取り込み方法を確認してください。`;
+        `${rows.length} 件のデータを検出しました（区分による除外対象 ${excludedByCategory} 件・ランクによる除外対象 ${excludedByRank} 件）。内容を確認してください。`;
       renderStaffXlsxMapping();
     });
   });
@@ -484,8 +531,7 @@ function initStaffXlsxImport() {
         skippedByCategory++;
         return;
       }
-      const titleKey = r.title || '（職名なし）';
-      const level = titleLevelMap[titleKey] || suggestLevelForTitle(r.title);
+      const level = resolveImportLevel(r);
       const retired = !!r.retireDate || r.activeFlag === 0 || r.activeFlag === '0';
       if (level === 'exclude' || retired) {
         skipped++;
@@ -531,6 +577,8 @@ function initStaffXlsxImport() {
     document.getElementById('staff-xlsx-box').classList.add('hidden');
     document.getElementById('staff-xlsx-input').value = '';
     document.getElementById('staff-xlsx-mapping-tbody').innerHTML = '';
+    document.getElementById('staff-xlsx-mapping-box').classList.remove('hidden');
+    document.getElementById('staff-xlsx-no-mapping-note').classList.add('hidden');
     document.getElementById('staff-xlsx-summary').textContent = '';
     document.getElementById('staff-xlsx-confirm').disabled = true;
     staffXlsxRows = null;

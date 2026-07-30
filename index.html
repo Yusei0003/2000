@@ -76,14 +76,17 @@
 
     <div class="card hidden" id="staff-xlsx-box">
       <h2>Excel名簿データの取り込み</h2>
-      <p class="hint">人事給与システム等から出力した名簿（番号・氏名・職名・所属名・係名・兼職・区分名・採用日等の列を含む .xlsx）をそのまま取り込めます。区分名が「会計年度任用職員」「派遣」の職員、退職者・非在職者は自動的に取込対象から除外されます。まず職名ごとに「係長級／主事級／取り込まない」を指定してください（内容は次回の取り込み時にも記憶されます）。</p>
+      <p class="hint">人事給与システム等から出力した名簿（番号・氏名・職名・所属名・係名・兼職・区分名・ランク・採用日等の列を含む .xlsx）をそのまま取り込めます。級は原則<strong>ランク</strong>から自動判定します（1〜399：課長級以上は除外／400〜600：係長級／601〜999：主事級／1000以降：会計年度任用職員等は除外）。区分名が「会計年度任用職員」「派遣」の職員、退職者・非在職者も自動的に取込対象から除外されます。ランクが読み取れない行のみ、職名ごとの取り込み方法を指定してください（内容は次回の取り込み時にも記憶されます）。</p>
       <input type="file" id="staff-xlsx-input" accept=".xlsx">
       <div id="staff-xlsx-summary" class="hint"></div>
-      <div class="table-wrap small-table">
-        <table>
-          <thead><tr><th>職名</th><th>人数</th><th>取り込み方法</th></tr></thead>
-          <tbody id="staff-xlsx-mapping-tbody"></tbody>
-        </table>
+      <p id="staff-xlsx-no-mapping-note" class="hint hidden">すべての職員がランクから自動判定できました。職名の指定は不要です。</p>
+      <div id="staff-xlsx-mapping-box">
+        <div class="table-wrap small-table">
+          <table>
+            <thead><tr><th>職名（ランク判定不可分のみ）</th><th>人数</th><th>取り込み方法</th></tr></thead>
+            <tbody id="staff-xlsx-mapping-tbody"></tbody>
+          </table>
+        </div>
       </div>
       <div class="row-actions" style="margin-top:12px">
         <button id="staff-xlsx-confirm" class="btn-primary" disabled>この内容で取り込む</button>
