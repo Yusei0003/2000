@@ -247,15 +247,14 @@ function matchesStaffSearch(s, query) {
     .filter(Boolean)
     .some((v) => String(v).toLowerCase().includes(q));
 }
-function renderStaffTable() {
-  const tbody = document.getElementById('staff-tbody');
-  const visible = staff.filter((s) => matchesStaffSearch(s, staffSearchQuery)).sort(compareByDeptCode);
-  tbody.innerHTML = visible
-    .map((s) => {
-      const standing = isStandingExcluded(s, settings.standingExcludedDepts);
-      const reason = standing ? standingExcludedReason(s, settings.standingExcludedDepts) : '';
-      const autoCitizen = !s.citizenExp && effectiveCitizenExp(s);
-      return `
+/** 除外理由（表示用）。手動で対象外にした職員には常時除外とは別の理由文言を返す */
+function exclusionReason(s) {
+  if (s.active === false) return '対象外（手動設定）';
+  return standingExcludedReason(s, settings.standingExcludedDepts) || '';
+}
+function staffRowHtml(s, { showReason }) {
+  const autoCitizen = !s.citizenExp && effectiveCitizenExp(s);
+  return `
     <tr>
       <td>${escapeHtml(s.number)}</td>
       <td>${escapeHtml(s.name)}</td>
@@ -277,16 +276,12 @@ function renderStaffTable() {
         </label>
       </td>
       <td><input type="checkbox" class="dispatched-toggle" data-id="${s.id}" ${s.dispatched ? 'checked' : ''}></td>
-      <td>${standing ? escapeHtml(reason) : ''}</td>
+      ${showReason ? `<td>${escapeHtml(exclusionReason(s))}</td>` : ''}
       <td>${escapeHtml(s.hireDate || '')}</td>
-      <td>${s.active !== false ? '○' : '除外'}</td>
       <td><button class="btn-danger" data-del="${s.id}">削除</button></td>
     </tr>`;
-    })
-    .join('');
-  document.getElementById('staff-count').textContent =
-    `${staff.length} 名（係長級 ${staff.filter((s) => s.level === 'senior').length} / 主事級 ${staff.filter((s) => s.level === 'junior').length}）` +
-    (staffSearchQuery ? ` ／ 検索結果 ${visible.length} 名` : '');
+}
+function attachStaffRowHandlers(tbody) {
   tbody.querySelectorAll('[data-del]').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (!confirm('この職員を削除しますか？（履歴の表示名は残ります）')) return;
@@ -318,6 +313,26 @@ function renderStaffTable() {
       renderStaffTable();
     });
   });
+}
+/** 名簿表示を「対象者リスト」（日直の割当対象）と「除外リスト」（常時除外・手動除外）に分けて表示する */
+function renderStaffTable() {
+  const visible = staff.filter((s) => matchesStaffSearch(s, staffSearchQuery)).sort(compareByDeptCode);
+  const excludedList = visible.filter((s) => s.active === false || isStandingExcluded(s, settings.standingExcludedDepts));
+  const targetList = visible.filter((s) => !(s.active === false || isStandingExcluded(s, settings.standingExcludedDepts)));
+
+  const targetTbody = document.getElementById('staff-tbody-target');
+  targetTbody.innerHTML = targetList.map((s) => staffRowHtml(s, { showReason: false })).join('');
+  attachStaffRowHandlers(targetTbody);
+
+  const excludedTbody = document.getElementById('staff-tbody-excluded');
+  excludedTbody.innerHTML = excludedList.map((s) => staffRowHtml(s, { showReason: true })).join('');
+  attachStaffRowHandlers(excludedTbody);
+
+  document.getElementById('staff-count').textContent =
+    `${staff.length} 名（係長級 ${staff.filter((s) => s.level === 'senior').length} / 主事級 ${staff.filter((s) => s.level === 'junior').length}）` +
+    (staffSearchQuery ? ` ／ 検索結果 ${visible.length} 名` : '');
+  document.getElementById('staff-target-count').textContent = `対象者リスト（${targetList.length} 名）`;
+  document.getElementById('staff-excluded-count').textContent = `除外リスト（${excludedList.length} 名）`;
 }
 function initStaffSearch() {
   const input = document.getElementById('staff-search');
