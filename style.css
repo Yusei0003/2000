@@ -202,6 +202,83 @@ select.result-select {
 .help-list { padding-left: 20px; }
 .help-list li { margin-bottom: 10px; }
 
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chip-list .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #eef2f7;
+  border-radius: 999px;
+  padding: 5px 8px 5px 12px;
+  font-size: 13px;
+}
+.chip-list .chip button {
+  border: none;
+  background: #dde3ea;
+  color: var(--danger);
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  cursor: pointer;
+  font-size: 12px;
+}
+.chip-list .chip button:hover { background: #fbd5d5; }
+.chip-list .empty-hint { color: var(--muted); font-size: 13px; }
+
+select[multiple] {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 20px;
+}
+.modal-box {
+  background: #fff;
+  border-radius: 10px;
+  padding: 24px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.2);
+}
+.modal-box h3 { margin: 0 0 14px; font-size: 16px; }
+.modal-box .grid-form { margin-bottom: 18px; }
+
+.print-sheet {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 780px;
+  background: #fff;
+  color: #111;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+  padding: 24px;
+}
+.print-sheet h2 { text-align: center; font-size: 18px; margin: 0 0 16px; }
+.print-sheet table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.print-sheet th, .print-sheet td {
+  border: 1px solid #999;
+  padding: 5px 6px;
+  text-align: left;
+  white-space: nowrap;
+}
+.print-sheet th { background: #eef2f7; }
+
 .toast {
   position: fixed;
   bottom: 24px;
