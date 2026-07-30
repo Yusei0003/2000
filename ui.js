@@ -220,9 +220,35 @@ function sortedDeptList() {
 function uniqueDepts() {
   return sortedDeptList().map((d) => d.name);
 }
+/** 所属CD順（無ければ所属名・番号順）で比較する */
+function compareByDeptCode(a, b) {
+  const ca = a.deptCode || null;
+  const cb = b.deptCode || null;
+  if (ca && cb) {
+    const cmp = String(ca).localeCompare(String(cb), 'ja', { numeric: true });
+    if (cmp !== 0) return cmp;
+  } else if (ca && !cb) {
+    return -1;
+  } else if (!ca && cb) {
+    return 1;
+  }
+  const deptCmp = (a.dept || '').localeCompare(b.dept || '', 'ja');
+  if (deptCmp !== 0) return deptCmp;
+  return String(a.number || '').localeCompare(String(b.number || ''), 'ja', { numeric: true });
+}
+let staffSearchQuery = '';
+function matchesStaffSearch(s, query) {
+  if (!query) return true;
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [s.number, s.name, s.dept, s.section, s.title]
+    .filter(Boolean)
+    .some((v) => String(v).toLowerCase().includes(q));
+}
 function renderStaffTable() {
   const tbody = document.getElementById('staff-tbody');
-  tbody.innerHTML = staff
+  const visible = staff.filter((s) => matchesStaffSearch(s, staffSearchQuery)).sort(compareByDeptCode);
+  tbody.innerHTML = visible
     .map((s) => {
       const standing = isStandingExcluded(s, settings.standingExcludedDepts);
       const reason = standing ? standingExcludedReason(s, settings.standingExcludedDepts) : '';
@@ -241,6 +267,7 @@ function renderStaffTable() {
           ${autoCitizen ? '<span class="muted" style="font-size:11px">（自動判定あり）</span>' : ''}
         </label>
       </td>
+      <td><input type="checkbox" class="dispatched-toggle" data-id="${s.id}" ${s.dispatched ? 'checked' : ''}></td>
       <td>${standing ? escapeHtml(reason) : ''}</td>
       <td>${escapeHtml(s.hireDate || '')}</td>
       <td>${s.active !== false ? '○' : '除外'}</td>
@@ -248,7 +275,9 @@ function renderStaffTable() {
     </tr>`;
     })
     .join('');
-  document.getElementById('staff-count').textContent = `${staff.length} 名（係長級 ${staff.filter((s) => s.level === 'senior').length} / 主事級 ${staff.filter((s) => s.level === 'junior').length}）`;
+  document.getElementById('staff-count').textContent =
+    `${staff.length} 名（係長級 ${staff.filter((s) => s.level === 'senior').length} / 主事級 ${staff.filter((s) => s.level === 'junior').length}）` +
+    (staffSearchQuery ? ` ／ 検索結果 ${visible.length} 名` : '');
   tbody.querySelectorAll('[data-del]').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (!confirm('この職員を削除しますか？（履歴の表示名は残ります）')) return;
@@ -264,6 +293,22 @@ function renderStaffTable() {
       save(KEY_STAFF, staff);
       renderStaffTable();
     });
+  });
+  tbody.querySelectorAll('.dispatched-toggle').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const s = staffById(cb.dataset.id);
+      s.dispatched = cb.checked;
+      save(KEY_STAFF, staff);
+      renderStaffTable();
+    });
+  });
+}
+function initStaffSearch() {
+  const input = document.getElementById('staff-search');
+  if (!input) return;
+  input.addEventListener('input', () => {
+    staffSearchQuery = input.value;
+    renderStaffTable();
   });
 }
 
@@ -283,6 +328,7 @@ function initStaffForm() {
       retireDate: null,
       citizenExp: document.getElementById('st-citizen').checked,
       deptHistory: [],
+      dispatched: false,
       active: document.getElementById('st-active').checked,
     };
     if (!rec.name || !rec.dept) return;
@@ -1373,6 +1419,7 @@ function initHistoryXlsxImport() {
 document.addEventListener('DOMContentLoaded', () => {
   initTabs();
   initStaffForm();
+  initStaffSearch();
   initStaffXlsxImport();
   initHistoryXlsxImport();
   initHandoverExport();

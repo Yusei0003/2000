@@ -64,10 +64,14 @@
           <button id="staff-import-cancel" class="btn-secondary">閉じる</button>
         </div>
       </div>
+      <label>職員検索（番号・氏名・所属・係名・職名で絞り込み）
+        <input type="text" id="staff-search" placeholder="例：山田、総務課、派遣">
+      </label>
+      <p class="hint">外部組織へ派遣中の職員は「派遣（除外）」にチェックすると、区分名に関係なく常に日直の対象から外れます。一覧は所属CD順に表示されます。</p>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>番号</th><th>氏名</th><th>級</th><th>職名</th><th>所属課</th><th>係名</th><th>市民課経験</th><th>常時除外</th><th>採用日</th><th>対象</th><th></th></tr>
+            <tr><th>番号</th><th>氏名</th><th>級</th><th>職名</th><th>所属課</th><th>係名</th><th>市民課経験</th><th>派遣（除外）</th><th>常時除外</th><th>採用日</th><th>対象</th><th></th></tr>
           </thead>
           <tbody id="staff-tbody"></tbody>
         </table>
