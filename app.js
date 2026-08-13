@@ -193,9 +193,10 @@ function isQualified(staff) {
 function isSecretarySection(staff) {
   return (staff.section && staff.section.includes('秘書係')) || (staff.dept && staff.dept.includes('秘書係'));
 }
-/** 常時除外（外局等の手動登録所属／秘書係／運転手／外部への派遣者）に該当するか */
+/** 常時除外（外局等の手動登録所属／秘書係／運転手／外部への派遣者／7割措置）に該当するか */
 function isStandingExcluded(staff, standingExcludedDepts) {
   if (staff.dispatched) return true;
+  if (staff.seventyPercent) return true;
   if (isSecretarySection(staff)) return true;
   if (staff.sideJob && staff.sideJob.includes('運転手')) return true;
   if (Array.isArray(standingExcludedDepts) && staff.dept && standingExcludedDepts.some((d) => d && staff.dept.includes(d))) {
@@ -206,6 +207,7 @@ function isStandingExcluded(staff, standingExcludedDepts) {
 /** 常時除外の理由（表示用）。該当しなければ null */
 function standingExcludedReason(staff, standingExcludedDepts) {
   if (staff.dispatched) return '外部への派遣者';
+  if (staff.seventyPercent) return '7割措置';
   if (isSecretarySection(staff)) return '秘書係';
   if (staff.sideJob && staff.sideJob.includes('運転手')) return '運転手';
   if (Array.isArray(standingExcludedDepts)) {

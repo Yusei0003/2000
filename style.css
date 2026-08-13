@@ -69,6 +69,14 @@ body {
   margin-top: 8px;
 }
 .period-add-box .grid-form { margin-bottom: 8px; }
+.past-period-banner {
+  max-width: 1080px;
+  margin: 8px auto 0;
+  padding: 8px 16px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius);
+}
 
 .tabs {
   display: flex;
