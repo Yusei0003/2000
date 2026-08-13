@@ -1220,6 +1220,71 @@ function closeChangeModal() {
 /* ------------------------------------------------------------
  * 引継ぎ用Excel書出
  * ------------------------------------------------------------ */
+/* ------------------------------------------------------------
+ * 全データのバックアップ・復元（JSON）
+ * ------------------------------------------------------------ */
+const BACKUP_KEYS = {
+  staff: KEY_STAFF,
+  monthRules: KEY_MONTH_RULES,
+  fiscalEvents: KEY_FISCAL_EVENTS,
+  settings: KEY_SETTINGS,
+  history: KEY_HISTORY,
+  titleLevelMap: KEY_TITLE_LEVEL_MAP,
+  leaves: KEY_LEAVES,
+};
+function initBackup() {
+  document.getElementById('backup-export-btn').addEventListener('click', () => {
+    const data = {};
+    Object.entries(BACKUP_KEYS).forEach(([name, key]) => {
+      data[name] = load(key, null);
+    });
+    const payload = {
+      app: '日直勤務表 自動作成アプリ',
+      backupVersion: 1,
+      exportedAt: new Date().toISOString(),
+      data,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const now = new Date();
+    const stamp =
+      toISO(now).replace(/-/g, '') + '-' + String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
+    downloadBlob(`日直勤務表_バックアップ_${stamp}.json`, blob);
+    showToast('バックアップを作成しました');
+  });
+
+  document.getElementById('backup-import-input').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      e.target.value = '';
+      let payload;
+      try {
+        payload = JSON.parse(reader.result);
+      } catch (err) {
+        alert('バックアップファイルの読み込みに失敗しました（JSON形式ではありません）。');
+        return;
+      }
+      if (!payload || typeof payload !== 'object' || !payload.data || !Array.isArray(payload.data.staff)) {
+        alert('バックアップファイルの内容が正しくありません。');
+        return;
+      }
+      const exportedAt = payload.exportedAt ? new Date(payload.exportedAt).toLocaleString('ja-JP') : '不明';
+      if (!confirm(`このバックアップ（作成日時：${exportedAt}）で現在のデータをすべて上書きします。よろしいですか？`)) {
+        return;
+      }
+      Object.entries(BACKUP_KEYS).forEach(([name, key]) => {
+        if (payload.data[name] !== undefined && payload.data[name] !== null) {
+          save(key, payload.data[name]);
+        }
+      });
+      showToast('バックアップを復元しました。画面を再読み込みします。');
+      setTimeout(() => location.reload(), 800);
+    };
+    reader.readAsText(file, 'UTF-8');
+  });
+}
+
 function initHandoverExport() {
   document.getElementById('history-handover-btn').addEventListener('click', () => {
     if (!history.length) {
@@ -1513,6 +1578,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initStaffSearch();
   initStaffXlsxImport();
   initHistoryXlsxImport();
+  initBackup();
   initHandoverExport();
   initHistoryPdf();
   initOptions();
