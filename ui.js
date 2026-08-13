@@ -11,6 +11,8 @@ const KEY_SETTINGS = 'duty_settings_v2';
 const KEY_HISTORY = 'duty_history_v2';
 const KEY_TITLE_LEVEL_MAP = 'duty_title_level_map_v1';
 const KEY_LEAVES = 'duty_leaves_v1';
+const KEY_PERIODS = 'duty_periods_v1';
+const KEY_CURRENT_PERIOD = 'duty_current_period_v1';
 
 const DEFAULT_SETTINGS = {
   minGapDays: 120,
@@ -161,6 +163,175 @@ if (!Array.isArray(settings.standingExcludedDepts)) settings.standingExcludedDep
 let history = load(KEY_HISTORY, []);
 let titleLevelMap = load(KEY_TITLE_LEVEL_MAP, {});
 let leaves = load(KEY_LEAVES, []);
+let periods = load(KEY_PERIODS, []);
+let currentPeriodId = load(KEY_CURRENT_PERIOD, null);
+
+/* ------------------------------------------------------------
+ * 処理期（年度の前期・後期ごとに作業を進めるための単位）
+ * ------------------------------------------------------------ */
+/** 処理期レコードを新規作成する（保存はしない） */
+function buildPeriod(fiscalYear, half) {
+  const range = periodRange(fiscalYear, half);
+  return {
+    id: periodIdOf(fiscalYear, half),
+    fiscalYear,
+    half,
+    startDate: range.startDate,
+    endDate: range.endDate,
+    label: periodLabelOf(fiscalYear, half),
+    citizenExpNumbers: [],
+    standingExcludedDepts: [],
+    createdAt: new Date().toISOString(),
+  };
+}
+function periodById(id) {
+  return periods.find((p) => p.id === id) || null;
+}
+/** 処理期の導入前に登録された「市民課経験者」「常時除外する所属」を、現在の処理期へ移行する */
+function migratePeriods() {
+  if (periods.length) return;
+  const cur = periodOfDate(new Date());
+  const p = buildPeriod(cur.fiscalYear, cur.half);
+  p.citizenExpNumbers = staff.filter((s) => s.citizenExp && s.number).map((s) => String(s.number));
+  p.standingExcludedDepts = Array.isArray(settings.standingExcludedDepts) ? [...settings.standingExcludedDepts] : [];
+  periods.push(p);
+  currentPeriodId = p.id;
+  save(KEY_PERIODS, periods);
+  save(KEY_CURRENT_PERIOD, currentPeriodId);
+}
+migratePeriods();
+/** 現在選択中の処理期。無ければ今日の日付から自動作成する */
+function currentPeriod() {
+  let p = periodById(currentPeriodId);
+  if (!p) {
+    p = periods[periods.length - 1] || null;
+    if (!p) {
+      const cur = periodOfDate(new Date());
+      p = buildPeriod(cur.fiscalYear, cur.half);
+      periods.push(p);
+      save(KEY_PERIODS, periods);
+    }
+    currentPeriodId = p.id;
+    save(KEY_CURRENT_PERIOD, currentPeriodId);
+  }
+  if (!Array.isArray(p.citizenExpNumbers)) p.citizenExpNumbers = [];
+  if (!Array.isArray(p.standingExcludedDepts)) p.standingExcludedDepts = [];
+  return p;
+}
+function sortPeriods() {
+  periods.sort((a, b) => (a.fiscalYear - b.fiscalYear) || (a.half < b.half ? -1 : a.half > b.half ? 1 : 0));
+}
+/** 直前の処理期の内容（市民課経験者・常時除外所属）を引き継ぐ */
+function copyFromPreviousPeriod(target) {
+  const prev = previousPeriodOf(target.fiscalYear, target.half);
+  const src = periodById(periodIdOf(prev.fiscalYear, prev.half));
+  if (!src) return null;
+  const knownNumbers = new Set(staff.map((s) => String(s.number)));
+  target.citizenExpNumbers = (src.citizenExpNumbers || []).filter((n) => knownNumbers.has(String(n)));
+  const knownDepts = new Set(staff.map((s) => s.dept).filter(Boolean));
+  target.standingExcludedDepts = (src.standingExcludedDepts || []).filter((d) => knownDepts.has(d));
+  return src;
+}
+/** 処理期の市民課経験者指定を反映した職員配列を返す（app.js側は staff.citizenExp を見るため） */
+function staffForPeriod() {
+  const p = currentPeriod();
+  const set = new Set((p.citizenExpNumbers || []).map(String));
+  return staff.map((s) => ({ ...s, citizenExp: set.has(String(s.number)) }));
+}
+/** 職員が現在の処理期で市民課経験者として指定されているか */
+function isCitizenExpInPeriod(s) {
+  return (currentPeriod().citizenExpNumbers || []).map(String).includes(String(s.number));
+}
+function setCitizenExpInPeriod(s, on) {
+  const p = currentPeriod();
+  const num = String(s.number);
+  const list = (p.citizenExpNumbers || []).map(String).filter((n) => n !== num);
+  if (on) list.push(num);
+  p.citizenExpNumbers = list;
+  save(KEY_PERIODS, periods);
+}
+
+function renderPeriodBar() {
+  const p = currentPeriod();
+  sortPeriods();
+  const sel = document.getElementById('period-select');
+  sel.innerHTML = periods
+    .map((x) => `<option value="${x.id}" ${x.id === p.id ? 'selected' : ''}>${escapeHtml(x.label)}</option>`)
+    .join('');
+  document.getElementById('period-range').textContent = `${p.startDate} 〜 ${p.endDate}`;
+}
+function initPeriodBar() {
+  renderPeriodBar();
+  document.getElementById('period-select').addEventListener('change', (e) => {
+    currentPeriodId = e.target.value;
+    save(KEY_CURRENT_PERIOD, currentPeriodId);
+    renderAllForPeriod();
+    showToast(`処理期を「${currentPeriod().label}」に切り替えました`);
+  });
+  document.getElementById('period-add-btn').addEventListener('click', () => {
+    const box = document.getElementById('period-add-box');
+    box.classList.toggle('hidden');
+    if (!box.classList.contains('hidden')) {
+      const cur = currentPeriod();
+      const next = cur.half === 'H1' ? { fiscalYear: cur.fiscalYear, half: 'H2' } : { fiscalYear: cur.fiscalYear + 1, half: 'H1' };
+      document.getElementById('period-new-year').value = next.fiscalYear;
+      document.getElementById('period-new-half').value = next.half;
+    }
+  });
+  document.getElementById('period-add-cancel').addEventListener('click', () => {
+    document.getElementById('period-add-box').classList.add('hidden');
+  });
+  document.getElementById('period-create').addEventListener('click', () => {
+    const fy = Number(document.getElementById('period-new-year').value);
+    const half = document.getElementById('period-new-half').value;
+    if (!fy) {
+      alert('年度を入力してください。');
+      return;
+    }
+    if (periodById(periodIdOf(fy, half))) {
+      alert('その処理期はすでに登録されています。');
+      return;
+    }
+    const p = buildPeriod(fy, half);
+    const src = copyFromPreviousPeriod(p);
+    periods.push(p);
+    sortPeriods();
+    save(KEY_PERIODS, periods);
+    currentPeriodId = p.id;
+    save(KEY_CURRENT_PERIOD, currentPeriodId);
+    document.getElementById('period-add-box').classList.add('hidden');
+    renderAllForPeriod();
+    showToast(src ? `${p.label}を作成し、${src.label}の内容を引き継ぎました` : `${p.label}を作成しました`);
+  });
+  document.getElementById('period-copy-btn').addEventListener('click', () => {
+    const p = currentPeriod();
+    const prev = previousPeriodOf(p.fiscalYear, p.half);
+    const src = periodById(periodIdOf(prev.fiscalYear, prev.half));
+    if (!src) {
+      alert(`引き継ぎ元となる${periodLabelOf(prev.fiscalYear, prev.half)}が登録されていません。`);
+      return;
+    }
+    if (!confirm(`${src.label}の「市民課経験者」「常時除外する所属」を${p.label}へコピーします。現在の内容は上書きされます。よろしいですか？`)) {
+      return;
+    }
+    copyFromPreviousPeriod(p);
+    save(KEY_PERIODS, periods);
+    renderAllForPeriod();
+    showToast(`${src.label}の内容をコピーしました`);
+  });
+}
+/** 処理期の切り替え時に、処理期に依存する画面をまとめて再描画する */
+function renderAllForPeriod() {
+  renderPeriodBar();
+  renderStaffTable();
+  renderStandingRuleList();
+  renderLeaveTable();
+  renderHistoryTable();
+  renderCheckTable();
+  populateFiscalYearSelect();
+  renderEventTable();
+  applyPeriodToGenerateTab();
+}
 
 let draftDates = []; // 勤務表作成タブの作業中の指定日
 let draftResults = []; // 作成された勤務表（未確定）
@@ -250,10 +421,11 @@ function matchesStaffSearch(s, query) {
 /** 除外理由（表示用）。手動で対象外にした職員には常時除外とは別の理由文言を返す */
 function exclusionReason(s) {
   if (s.active === false) return '対象外（手動設定）';
-  return standingExcludedReason(s, settings.standingExcludedDepts) || '';
+  return standingExcludedReason(s, currentPeriod().standingExcludedDepts) || '';
 }
 function staffRowHtml(s, { showReason }) {
-  const autoCitizen = !s.citizenExp && effectiveCitizenExp(s);
+  const citizen = isCitizenExpInPeriod(s);
+  const autoCitizen = !citizen && effectiveCitizenExp({ ...s, citizenExp: false });
   return `
     <tr>
       <td>${escapeHtml(s.number)}</td>
@@ -271,7 +443,7 @@ function staffRowHtml(s, { showReason }) {
       <td>${escapeHtml(s.section || '')}</td>
       <td>
         <label class="checkbox-label" style="gap:4px">
-          <input type="checkbox" class="citizen-toggle" data-id="${s.id}" ${s.citizenExp ? 'checked' : ''}>
+          <input type="checkbox" class="citizen-toggle" data-id="${s.id}" ${citizen ? 'checked' : ''}>
           ${autoCitizen ? '<span class="muted" style="font-size:11px">（自動判定あり）</span>' : ''}
         </label>
       </td>
@@ -299,9 +471,7 @@ function attachStaffRowHandlers(tbody) {
   });
   tbody.querySelectorAll('.citizen-toggle').forEach((cb) => {
     cb.addEventListener('change', () => {
-      const s = staffById(cb.dataset.id);
-      s.citizenExp = cb.checked;
-      save(KEY_STAFF, staff);
+      setCitizenExpInPeriod(staffById(cb.dataset.id), cb.checked);
       renderStaffTable();
     });
   });
@@ -316,9 +486,10 @@ function attachStaffRowHandlers(tbody) {
 }
 /** 名簿表示を「対象者リスト」（日直の割当対象）と「除外リスト」（常時除外・手動除外）に分けて表示する */
 function renderStaffTable() {
+  const standingDepts = currentPeriod().standingExcludedDepts;
   const visible = staff.filter((s) => matchesStaffSearch(s, staffSearchQuery)).sort(compareByDeptCode);
-  const excludedList = visible.filter((s) => s.active === false || isStandingExcluded(s, settings.standingExcludedDepts));
-  const targetList = visible.filter((s) => !(s.active === false || isStandingExcluded(s, settings.standingExcludedDepts)));
+  const excludedList = visible.filter((s) => s.active === false || isStandingExcluded(s, standingDepts));
+  const targetList = visible.filter((s) => !(s.active === false || isStandingExcluded(s, standingDepts)));
 
   const targetTbody = document.getElementById('staff-tbody-target');
   targetTbody.innerHTML = targetList.map((s) => staffRowHtml(s, { showReason: false })).join('');
@@ -358,7 +529,6 @@ function initStaffForm() {
       sideJob: document.getElementById('st-sidejob').value.trim(),
       hireDate: document.getElementById('st-hire').value || null,
       retireDate: null,
-      citizenExp: document.getElementById('st-citizen').checked,
       deptHistory: [],
       dispatched: false,
       active: document.getElementById('st-active').checked,
@@ -366,6 +536,7 @@ function initStaffForm() {
     if (!rec.name || !rec.dept) return;
     staff.push(rec);
     save(KEY_STAFF, staff);
+    if (document.getElementById('st-citizen').checked) setCitizenExpInPeriod(rec, true);
     renderStaffTable();
     e.target.reset();
     document.getElementById('st-active').checked = true;
@@ -387,8 +558,7 @@ function initStaffForm() {
       const [number, name, levelRaw, dept, citizenRaw, hireDate] = cols;
       if (!name || !dept) return;
       const level = levelRaw && levelRaw.includes('主事') ? 'junior' : 'senior';
-      const citizenExp = /true|○|はい/i.test(citizenRaw || '');
-      staff.push({
+      const rec = {
         id: uid('st'),
         number: (number || '').trim(),
         name: name.trim(),
@@ -397,12 +567,13 @@ function initStaffForm() {
         dept: dept.trim(),
         section: '',
         sideJob: '',
-        citizenExp,
         deptHistory: [],
         hireDate: (hireDate || '').trim() || null,
         retireDate: null,
         active: true,
-      });
+      };
+      staff.push(rec);
+      if (/true|○|はい/i.test(citizenRaw || '')) setCitizenExpInPeriod(rec, true);
       count++;
     });
     save(KEY_STAFF, staff);
@@ -414,7 +585,7 @@ function initStaffForm() {
 
   document.getElementById('staff-export-btn').addEventListener('click', () => {
     const rows = [['番号', '氏名', '級', '職名', '所属課', '係名', '市民課経験', '採用年月日']].concat(
-      staff.map((s) => [s.number, s.name, LEVEL_LABEL[s.level], s.title || '', s.dept, s.section || '', s.citizenExp ? 'TRUE' : 'FALSE', s.hireDate || ''])
+      staff.map((s) => [s.number, s.name, LEVEL_LABEL[s.level], s.title || '', s.dept, s.section || '', isCitizenExpInPeriod(s) ? 'TRUE' : 'FALSE', s.hireDate || ''])
     );
     downloadCsv('職員名簿.csv', rows);
   });
@@ -585,14 +756,10 @@ function isExcludedCategory(category) {
   return category === '会計年度任用職員' || category === '派遣';
 }
 function initStaffXlsxImport() {
-  document.getElementById('staff-xlsx-btn').addEventListener('click', () => {
-    document.getElementById('staff-xlsx-box').classList.toggle('hidden');
-  });
   document.getElementById('staff-xlsx-cancel').addEventListener('click', () => {
-    document.getElementById('staff-xlsx-box').classList.add('hidden');
     document.getElementById('staff-xlsx-input').value = '';
     document.getElementById('staff-xlsx-mapping-tbody').innerHTML = '';
-    document.getElementById('staff-xlsx-mapping-box').classList.remove('hidden');
+    document.getElementById('staff-xlsx-mapping-box').classList.add('hidden');
     document.getElementById('staff-xlsx-no-mapping-note').classList.add('hidden');
     document.getElementById('staff-xlsx-summary').textContent = '';
     document.getElementById('staff-xlsx-confirm').disabled = true;
@@ -685,10 +852,10 @@ function initStaffXlsxImport() {
     });
     save(KEY_STAFF, staff);
     renderStaffTable();
-    document.getElementById('staff-xlsx-box').classList.add('hidden');
+    renderStandingRuleList();
     document.getElementById('staff-xlsx-input').value = '';
     document.getElementById('staff-xlsx-mapping-tbody').innerHTML = '';
-    document.getElementById('staff-xlsx-mapping-box').classList.remove('hidden');
+    document.getElementById('staff-xlsx-mapping-box').classList.add('hidden');
     document.getElementById('staff-xlsx-no-mapping-note').classList.add('hidden');
     document.getElementById('staff-xlsx-summary').textContent = '';
     document.getElementById('staff-xlsx-confirm').disabled = true;
@@ -718,22 +885,29 @@ function initOptions() {
   });
 }
 
-/** 育休等による除外期間：職員番号・開始日・終了日の一覧表示 */
+/** 育休等による除外期間：職員番号・区分・開始日・終了日の一覧表示 */
 function renderLeaveTable() {
   const tbody = document.getElementById('leave-tbody');
-  tbody.innerHTML = leaves
+  const sorted = [...leaves].sort((a, b) => (a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : 0));
+  tbody.innerHTML = sorted
     .map((lv) => {
       const s = staff.find((x) => String(x.number) === String(lv.staffNumber));
+      const name = s ? escapeHtml(s.name) : lv.importedName
+        ? `${escapeHtml(lv.importedName)}<span class="muted">（名簿になし）</span>`
+        : '<span class="muted">（名簿に該当職員なし）</span>';
       return `
     <tr>
       <td>${escapeHtml(lv.staffNumber)}</td>
-      <td>${s ? escapeHtml(s.name) : '<span class="muted">（名簿に該当職員なし）</span>'}</td>
+      <td>${name}</td>
+      <td>${escapeHtml(lv.category || '')}</td>
       <td>${escapeHtml(lv.startDate)}</td>
-      <td>${escapeHtml(lv.endDate)}</td>
+      <td>${lv.endDate ? escapeHtml(lv.endDate) : '<span class="muted">未定</span>'}</td>
       <td><button class="btn-danger" data-del="${lv.id}">削除</button></td>
     </tr>`;
     })
     .join('');
+  const countEl = document.getElementById('leave-count');
+  if (countEl) countEl.textContent = `${leaves.length} 件`;
   tbody.querySelectorAll('[data-del]').forEach((btn) => {
     btn.addEventListener('click', () => {
       leaves = leaves.filter((lv) => lv.id !== btn.dataset.del);
@@ -742,19 +916,102 @@ function renderLeaveTable() {
     });
   });
 }
+/** 育休Excelを解析する（職員番号・氏名・区分・開始・終了の列を読む）
+ *  B列とD列がどちらも「氏名」のため、先に現れる列（職員氏名）を採用する */
+function parseLeaveWorkbook(workbook) {
+  for (const sheetName of workbook.SheetNames) {
+    const rows = sheetRows(workbook.Sheets[sheetName]);
+    const headerRowIdx = rows.findIndex(
+      (r) => r.some((c) => normalizeHeader(c) === '職員番号') && r.some((c) => normalizeHeader(c) === '開始')
+    );
+    if (headerRowIdx === -1) continue;
+    const headerRow = rows[headerRowIdx].map(normalizeHeader);
+    const col = (name) => headerRow.indexOf(name);
+    const idxNumber = col('職員番号');
+    const idxName = col('氏名');
+    const idxCategory = col('区分');
+    const idxStart = col('開始');
+    const idxEnd = col('終了');
+    if (idxNumber === -1 || idxStart === -1) continue;
+    return rows
+      .slice(headerRowIdx + 1)
+      .filter((r) => r[idxNumber] !== null && r[idxNumber] !== undefined && r[idxNumber] !== '')
+      .map((r) => ({
+        staffNumber: String(r[idxNumber]).trim(),
+        name: idxName >= 0 ? String(r[idxName] || '').trim() : '',
+        category: idxCategory >= 0 ? String(r[idxCategory] || '').trim() : '',
+        startDate: excelValueToISO(r[idxStart]),
+        endDate: idxEnd >= 0 ? excelValueToISO(r[idxEnd]) : null,
+      }))
+      .filter((r) => r.startDate);
+  }
+  return null;
+}
+function initLeaveXlsxImport() {
+  const input = document.getElementById('leave-xlsx-input');
+  if (!input) return;
+  input.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    readWorkbookFile(file, (err, workbook) => {
+      e.target.value = '';
+      if (err) {
+        alert('ファイルの読み込みに失敗しました：' + err.message);
+        return;
+      }
+      const rows = parseLeaveWorkbook(workbook);
+      if (!rows || !rows.length) {
+        alert('育休データの列（職員番号・開始など）が見つかりませんでした。ファイル形式をご確認ください。');
+        return;
+      }
+      let added = 0;
+      let duplicated = 0;
+      let unknown = 0;
+      const knownNumbers = new Set(staff.map((s) => String(s.number)));
+      rows.forEach((r) => {
+        const dup = leaves.some(
+          (lv) =>
+            String(lv.staffNumber) === r.staffNumber && lv.startDate === r.startDate && (lv.endDate || null) === (r.endDate || null)
+        );
+        if (dup) {
+          duplicated++;
+          return;
+        }
+        if (!knownNumbers.has(r.staffNumber)) unknown++;
+        leaves.push({
+          id: uid('lv'),
+          staffNumber: r.staffNumber,
+          startDate: r.startDate,
+          endDate: r.endDate,
+          category: r.category || '',
+          importedName: r.name || '',
+        });
+        added++;
+      });
+      save(KEY_LEAVES, leaves);
+      renderLeaveTable();
+      showToast(
+        `育休データを取り込みました（新規${added}件・重複${duplicated}件スキップ` +
+          (unknown ? `・名簿にない職員${unknown}件` : '') +
+          '）'
+      );
+    });
+  });
+}
+
 function initLeaveForm() {
   renderLeaveTable();
   document.getElementById('leave-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const staffNumber = document.getElementById('lv-number').value.trim();
     const startDate = document.getElementById('lv-start').value;
-    const endDate = document.getElementById('lv-end').value;
-    if (!staffNumber || !startDate || !endDate) return;
-    if (startDate > endDate) {
+    const endDate = document.getElementById('lv-end').value || null;
+    if (!staffNumber || !startDate) return;
+    if (endDate && startDate > endDate) {
       alert('終了日は開始日以降の日付にしてください。');
       return;
     }
-    leaves.push({ id: uid('lv'), staffNumber, startDate, endDate });
+    leaves.push({ id: uid('lv'), staffNumber, startDate, endDate, category: '', importedName: '' });
     save(KEY_LEAVES, leaves);
     renderLeaveTable();
     e.target.reset();
@@ -770,23 +1027,25 @@ function renderStandingRuleList() {
     el.innerHTML = '<span class="empty-hint">名簿に所属が登録されていません</span>';
     return;
   }
+  const p = currentPeriod();
   el.innerHTML = depts
     .map(
       ({ name }) => `
     <label class="checkbox-label" style="gap:6px">
-      <input type="checkbox" class="standing-dept-toggle" value="${escapeHtml(name)}" ${settings.standingExcludedDepts.includes(name) ? 'checked' : ''}>
+      <input type="checkbox" class="standing-dept-toggle" value="${escapeHtml(name)}" ${p.standingExcludedDepts.includes(name) ? 'checked' : ''}>
       ${escapeHtml(name)}
     </label>`
     )
     .join('');
   el.querySelectorAll('.standing-dept-toggle').forEach((cb) => {
     cb.addEventListener('change', () => {
+      const cp = currentPeriod();
       if (cb.checked) {
-        if (!settings.standingExcludedDepts.includes(cb.value)) settings.standingExcludedDepts.push(cb.value);
+        if (!cp.standingExcludedDepts.includes(cb.value)) cp.standingExcludedDepts.push(cb.value);
       } else {
-        settings.standingExcludedDepts = settings.standingExcludedDepts.filter((d) => d !== cb.value);
+        cp.standingExcludedDepts = cp.standingExcludedDepts.filter((d) => d !== cb.value);
       }
-      save(KEY_SETTINGS, settings);
+      save(KEY_PERIODS, periods);
       renderStaffTable();
     });
   });
@@ -1039,7 +1298,7 @@ function renderGenResultTable() {
 }
 function renderStaffSelect(idx, level, currentId) {
   const options = staff
-    .filter((s) => s.level === level && s.active !== false && !isStandingExcluded(s, settings.standingExcludedDepts))
+    .filter((s) => s.level === level && s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts))
     .map((s) => `<option value="${s.id}" ${s.id === currentId ? 'selected' : ''}>${escapeHtml(s.name)}（${escapeHtml(s.dept)}）</option>`)
     .join('');
   return `<select class="result-select" data-idx="${idx}" data-level="${level}"><option value="">未定</option>${options}</select>`;
@@ -1053,7 +1312,7 @@ function initGenerateRun() {
       return;
     }
     draftResults = generateAssignments({
-      staffList: staff,
+      staffList: staffForPeriod(),
       dutyDates: targetDates,
       monthRules,
       eventExclusions: computeEventExclusions(),
@@ -1062,7 +1321,7 @@ function initGenerateRun() {
       newHireMonths: settings.newHireMonths,
       specialLookback: settings.specialLookback,
       pairLookbackYears: settings.pairLookbackYears,
-      standingExcludedDepts: settings.standingExcludedDepts,
+      standingExcludedDepts: currentPeriod().standingExcludedDepts,
       leaves,
     });
     renderGenResultTable();
@@ -1071,8 +1330,13 @@ function initGenerateRun() {
 
   document.getElementById('gen-confirm').addEventListener('click', () => {
     if (!draftResults.length) return;
-    const label = document.getElementById('gen-label').value.trim() || '未設定期間';
-    const withLabel = draftResults.map((r) => ({ ...r, periodLabel: label, confirmedAt: new Date().toISOString() }));
+    const p = currentPeriod();
+    const withLabel = draftResults.map((r) => ({
+      ...r,
+      periodId: p.id,
+      periodLabel: p.label,
+      confirmedAt: new Date().toISOString(),
+    }));
     history = history.concat(withLabel).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     save(KEY_HISTORY, history);
     showToast('履歴に保存しました');
@@ -1090,17 +1354,48 @@ function initGenerateRun() {
   });
 
   document.getElementById('gen-pdf').addEventListener('click', () => {
-    const label = document.getElementById('gen-label').value.trim() || '日直勤務表';
+    const label = currentPeriod().label;
     exportRowsToPdf(label, draftResults, `日直勤務表_${label}.pdf`);
   });
+}
+/** 処理期の期間を勤務表作成タブの入力欄へ反映する */
+function applyPeriodToGenerateTab() {
+  const p = currentPeriod();
+  document.getElementById('gen-start').value = p.startDate;
+  document.getElementById('gen-end').value = p.endDate;
+  const label = document.getElementById('gen-period-label');
+  if (label) label.textContent = p.label;
+  draftDates = [];
+  draftResults = [];
+  renderGenDatesTable();
+  renderGenResultTable();
 }
 
 /* ------------------------------------------------------------
  * 履歴・確認
  * ------------------------------------------------------------ */
+let historyPeriodFilter = 'all';
+/** 表示対象の履歴（処理期フィルタ適用後）。判定・集計には常に全履歴を使う */
+function visibleHistory() {
+  if (historyPeriodFilter === 'all') return history;
+  const p = periodById(historyPeriodFilter);
+  if (!p) return history;
+  return history.filter((r) => (r.periodId ? r.periodId === p.id : r.date >= p.startDate && r.date <= p.endDate));
+}
+function renderHistoryPeriodFilter() {
+  const sel = document.getElementById('history-period-filter');
+  if (!sel) return;
+  sel.innerHTML =
+    `<option value="all" ${historyPeriodFilter === 'all' ? 'selected' : ''}>全期間</option>` +
+    periods
+      .map((p) => `<option value="${p.id}" ${historyPeriodFilter === p.id ? 'selected' : ''}>${escapeHtml(p.label)}</option>`)
+      .join('');
+}
 function renderHistoryTable() {
   const tbody = document.getElementById('history-tbody');
-  tbody.innerHTML = history
+  renderHistoryPeriodFilter();
+  const rows = visibleHistory();
+  tbody.innerHTML = rows
     .map(
       (r) => `
     <tr class="${r.status === 'warning' ? 'row-warning' : ''}">
@@ -1116,7 +1411,8 @@ function renderHistoryTable() {
     </tr>`
     )
     .join('');
-  document.getElementById('history-count').textContent = `${history.length} 件`;
+  document.getElementById('history-count').textContent =
+    historyPeriodFilter === 'all' ? `${history.length} 件` : `${rows.length} 件 ／ 全 ${history.length} 件`;
   tbody.querySelectorAll('[data-del]').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (!confirm('この履歴を削除しますか？')) return;
@@ -1129,6 +1425,14 @@ function renderHistoryTable() {
   });
   tbody.querySelectorAll('.change-btn').forEach((btn) => {
     btn.addEventListener('click', () => openChangeModal(btn.dataset.date, btn.dataset.level));
+  });
+}
+function initHistoryPeriodFilter() {
+  const sel = document.getElementById('history-period-filter');
+  if (!sel) return;
+  sel.addEventListener('change', () => {
+    historyPeriodFilter = sel.value;
+    renderHistoryTable();
   });
 }
 
@@ -1231,6 +1535,8 @@ const BACKUP_KEYS = {
   history: KEY_HISTORY,
   titleLevelMap: KEY_TITLE_LEVEL_MAP,
   leaves: KEY_LEAVES,
+  periods: KEY_PERIODS,
+  currentPeriodId: KEY_CURRENT_PERIOD,
 };
 function initBackup() {
   document.getElementById('backup-export-btn').addEventListener('click', () => {
@@ -1588,13 +1894,14 @@ document.addEventListener('DOMContentLoaded', () => {
   initEventForm();
   initGenerateDates();
   initGenerateRun();
+  initHistoryPeriodFilter();
+  initLeaveXlsxImport();
+  initPeriodBar();
 
   renderStaffTable();
   renderMonthRuleTable();
   renderHistoryTable();
   renderCheckTable();
 
-  const today = new Date();
-  document.getElementById('gen-start').value = toISO(today);
-  document.getElementById('gen-end').value = toISO(addMonths(today, 6));
+  applyPeriodToGenerateTab();
 });

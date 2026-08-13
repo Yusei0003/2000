@@ -30,6 +30,46 @@ body {
 .app-header h1 { margin: 0 0 4px; font-size: 22px; }
 .subtitle { margin: 0; color: var(--muted); font-size: 14px; }
 
+.period-bar {
+  max-width: 1080px;
+  margin: 8px auto 0;
+  padding: 0 24px;
+}
+.period-bar-inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+}
+.period-bar-inner .row-actions { margin-left: auto; }
+.period-select-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.period-select-label select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--text);
+}
+.period-add-box {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 8px;
+}
+.period-add-box .grid-form { margin-bottom: 8px; }
+
 .tabs {
   display: flex;
   gap: 4px;

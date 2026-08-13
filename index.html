@@ -12,6 +12,35 @@
   <p class="subtitle">職員名簿・ルールから日直勤務表（土日祝日・年末年始の当番表）を自動作成します。データはブラウザのlocalStorageに保存されます（サーバー不要）。</p>
 </header>
 
+<div class="period-bar">
+  <div class="period-bar-inner">
+    <label class="period-select-label">処理期
+      <select id="period-select"></select>
+    </label>
+    <span id="period-range" class="muted"></span>
+    <div class="row-actions">
+      <button id="period-add-btn" class="btn-secondary">処理期を追加</button>
+      <button id="period-copy-btn" class="btn-secondary">前回処理期からコピー</button>
+    </div>
+  </div>
+  <div id="period-add-box" class="period-add-box hidden">
+    <div class="grid-form">
+      <label>年度<input type="number" id="period-new-year" min="2000" max="2100" step="1"></label>
+      <label>区分
+        <select id="period-new-half">
+          <option value="H1">前期（4〜9月）</option>
+          <option value="H2">後期（10〜翌3月）</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint">作成すると、直前の処理期の「市民課経験者」「常時除外する所属」を自動的に引き継ぎます。</p>
+    <div class="row-actions">
+      <button id="period-create" class="btn-primary">この処理期を作成する</button>
+      <button id="period-add-cancel" class="btn-secondary">閉じる</button>
+    </div>
+  </div>
+</div>
+
 <nav class="tabs">
   <button class="tab-btn active" data-tab="staff">名簿管理</button>
   <button class="tab-btn" data-tab="rules">ルール設定</button>
@@ -24,41 +53,31 @@
 <main>
   <!-- ============ 名簿管理 ============ -->
   <section id="panel-staff" class="tab-panel active">
-    <div class="card">
-      <h2>職員を追加</h2>
-      <form id="staff-form" class="grid-form">
-        <label>職員番号<input type="text" id="st-number" placeholder="例：1023"></label>
-        <label>氏名<input type="text" id="st-name" required placeholder="例：山田太郎"></label>
-        <label>級
-          <select id="st-level">
-            <option value="senior">係長級</option>
-            <option value="junior">主事級</option>
-          </select>
-        </label>
-        <label>性別（日直ペアの性別ルールに使用）
-          <select id="st-gender">
-            <option value="">未設定</option>
-            <option value="M">男性</option>
-            <option value="F">女性</option>
-          </select>
-        </label>
-        <label>職名（任意・参考情報）<input type="text" id="st-title" placeholder="例：係長"></label>
-        <label>所属課<input type="text" id="st-dept" required placeholder="例：総務課"></label>
-        <label>係名（任意）<input type="text" id="st-section" placeholder="例：職員係"></label>
-        <label>兼職（任意）<input type="text" id="st-sidejob" placeholder="例：自動車運転手"></label>
-        <label>採用年月日（新規採用職員の6ヶ月除外に使用・任意）<input type="date" id="st-hire"></label>
-        <label class="checkbox-label"><input type="checkbox" id="st-citizen"> 市民課経験あり（手動指定）</label>
-        <label class="checkbox-label"><input type="checkbox" id="st-active" checked> 対象に含める（休職等の場合は外す）</label>
-        <button type="submit" class="btn-primary">追加する</button>
-      </form>
+    <div class="card" id="staff-xlsx-box">
+      <h2>1. Excel名簿データの取り込み</h2>
+      <p class="hint">最初にこの取り込みを行ってください。人事給与システム等から出力した名簿（番号・氏名・職名・所属名・性別・係名・兼職・区分名・ランク・採用日等の列を含む .xlsx）をそのまま取り込めます。級は原則<strong>ランク</strong>から自動判定します（1〜399：課長級以上は除外／400〜600：係長級／601〜999：主事級／1000以降：会計年度任用職員等は除外）。性別は<strong>1＝男性、0＝女性</strong>として自動判定します。区分名が「会計年度任用職員」「派遣」の職員、退職者・非在職者も自動的に取込対象から除外されます。ランクが読み取れない行のみ、職名ごとの取り込み方法を指定してください（内容は次回の取り込み時にも記憶されます）。</p>
+      <input type="file" id="staff-xlsx-input" accept=".xlsx">
+      <div id="staff-xlsx-summary" class="hint"></div>
+      <p id="staff-xlsx-no-mapping-note" class="hint hidden">すべての職員がランクから自動判定できました。職名の指定は不要です。</p>
+      <div id="staff-xlsx-mapping-box" class="hidden">
+        <div class="table-wrap small-table">
+          <table>
+            <thead><tr><th>職名（ランク判定不可分のみ）</th><th>人数</th><th>取り込み方法</th></tr></thead>
+            <tbody id="staff-xlsx-mapping-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="row-actions" style="margin-top:12px">
+        <button id="staff-xlsx-confirm" class="btn-primary" disabled>この内容で取り込む</button>
+        <button id="staff-xlsx-cancel" class="btn-secondary">選択を取り消す</button>
+      </div>
     </div>
 
     <div class="card">
       <div class="card-header-row">
-        <h2>職員名簿</h2>
+        <h2>2. 職員名簿</h2>
         <div class="row-actions">
           <span id="staff-count" class="muted"></span>
-          <button id="staff-xlsx-btn" class="btn-secondary">Excel名簿を取込</button>
           <button id="staff-import-btn" class="btn-secondary">CSV取込</button>
           <button id="staff-export-btn" class="btn-secondary">CSV書出</button>
         </div>
@@ -98,24 +117,34 @@
       </div>
     </div>
 
-    <div class="card hidden" id="staff-xlsx-box">
-      <h2>Excel名簿データの取り込み</h2>
-      <p class="hint">人事給与システム等から出力した名簿（番号・氏名・職名・所属名・係名・兼職・区分名・ランク・採用日等の列を含む .xlsx）をそのまま取り込めます。級は原則<strong>ランク</strong>から自動判定します（1〜399：課長級以上は除外／400〜600：係長級／601〜999：主事級／1000以降：会計年度任用職員等は除外）。区分名が「会計年度任用職員」「派遣」の職員、退職者・非在職者も自動的に取込対象から除外されます。ランクが読み取れない行のみ、職名ごとの取り込み方法を指定してください（内容は次回の取り込み時にも記憶されます）。</p>
-      <input type="file" id="staff-xlsx-input" accept=".xlsx">
-      <div id="staff-xlsx-summary" class="hint"></div>
-      <p id="staff-xlsx-no-mapping-note" class="hint hidden">すべての職員がランクから自動判定できました。職名の指定は不要です。</p>
-      <div id="staff-xlsx-mapping-box">
-        <div class="table-wrap small-table">
-          <table>
-            <thead><tr><th>職名（ランク判定不可分のみ）</th><th>人数</th><th>取り込み方法</th></tr></thead>
-            <tbody id="staff-xlsx-mapping-tbody"></tbody>
-          </table>
-        </div>
-      </div>
-      <div class="row-actions" style="margin-top:12px">
-        <button id="staff-xlsx-confirm" class="btn-primary" disabled>この内容で取り込む</button>
-        <button id="staff-xlsx-cancel" class="btn-secondary">閉じる</button>
-      </div>
+    <div class="card">
+      <h2>3. 職員を追加（個別登録）</h2>
+      <p class="hint">Excel名簿に含まれない職員を個別に追加する場合に使用します。</p>
+      <form id="staff-form" class="grid-form">
+        <label>職員番号<input type="text" id="st-number" placeholder="例：1023"></label>
+        <label>氏名<input type="text" id="st-name" required placeholder="例：山田太郎"></label>
+        <label>級
+          <select id="st-level">
+            <option value="senior">係長級</option>
+            <option value="junior">主事級</option>
+          </select>
+        </label>
+        <label>性別（日直ペアの性別ルールに使用）
+          <select id="st-gender">
+            <option value="">未設定</option>
+            <option value="M">男性</option>
+            <option value="F">女性</option>
+          </select>
+        </label>
+        <label>職名（任意・参考情報）<input type="text" id="st-title" placeholder="例：係長"></label>
+        <label>所属課<input type="text" id="st-dept" required placeholder="例：総務課"></label>
+        <label>係名（任意）<input type="text" id="st-section" placeholder="例：職員係"></label>
+        <label>兼職（任意）<input type="text" id="st-sidejob" placeholder="例：自動車運転手"></label>
+        <label>採用年月日（新規採用職員の6ヶ月除外に使用・任意）<input type="date" id="st-hire"></label>
+        <label class="checkbox-label"><input type="checkbox" id="st-citizen"> 市民課経験あり（手動指定）</label>
+        <label class="checkbox-label"><input type="checkbox" id="st-active" checked> 対象に含める（休職等の場合は外す）</label>
+        <button type="submit" class="btn-primary">追加する</button>
+      </form>
     </div>
   </section>
 
@@ -150,17 +179,22 @@
     <div class="card">
       <div class="card-header-row">
         <h2>育休等による除外期間</h2>
-        <span class="hint">育児休業等で日直ができない期間を、職員番号・開始日・終了日で登録します。登録期間中の日は自動的に対象外になります。</span>
+        <span id="leave-count" class="muted"></span>
       </div>
+      <p class="hint">育児休業等で日直ができない期間です。登録期間中の日は自動的に対象外になります。人事システム等から出力した育休一覧（職員番号・氏名・区分・開始・終了の列を含む .xlsx）をそのまま取り込めます。同じ職員・同じ期間の行は自動的にスキップされます。</p>
+      <label>育休Excelの取込
+        <input type="file" id="leave-xlsx-input" accept=".xlsx">
+      </label>
+      <p class="hint" style="margin-top:14px">個別に追加する場合は以下から登録してください（終了日が未定の場合は空欄のままで登録できます）。</p>
       <form id="leave-form" class="grid-form">
         <label>職員番号<input type="text" id="lv-number" required placeholder="例：1023"></label>
         <label>開始日<input type="date" id="lv-start" required></label>
-        <label>終了日<input type="date" id="lv-end" required></label>
+        <label>終了日（未定なら空欄）<input type="date" id="lv-end"></label>
         <button type="submit" class="btn-primary">登録する</button>
       </form>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>職員番号</th><th>氏名</th><th>開始日</th><th>終了日</th><th></th></tr></thead>
+          <thead><tr><th>職員番号</th><th>氏名</th><th>区分</th><th>開始日</th><th>終了日</th><th></th></tr></thead>
           <tbody id="leave-tbody"></tbody>
         </table>
       </div>
@@ -239,8 +273,8 @@
   <section id="panel-generate" class="tab-panel">
     <div class="card">
       <h2>1. 対象期間・指定日</h2>
+      <p class="hint">対象期間は選択中の処理期（<strong id="gen-period-label"></strong>）から自動入力されます。必要に応じて変更できます。</p>
       <div class="grid-form">
-        <label>期間ラベル（例：R8.4-R8.9）<input type="text" id="gen-label" placeholder="2026年度前期"></label>
         <label>開始日<input type="date" id="gen-start"></label>
         <label>終了日<input type="date" id="gen-end"></label>
       </div>
@@ -302,6 +336,9 @@
       <div class="card-header-row">
         <h2>確定済み履歴</h2>
         <div class="row-actions">
+          <label style="margin:0;font-size:13px">表示
+            <select id="history-period-filter"></select>
+          </label>
           <span id="history-count" class="muted"></span>
           <button id="history-export-btn" class="btn-secondary">CSV書出</button>
           <button id="history-pdf-btn" class="btn-secondary">PDF書出</button>
@@ -334,10 +371,11 @@
     <div class="card">
       <h2>使い方</h2>
       <ol class="help-list">
-        <li><strong>名簿管理</strong>タブで対象職員（補佐級以下）を登録します。部課長級・外局・秘書・運転手・会計年度任用職員・派遣は、Excel取込であれば自動的に除外されます。CSV取込にも対応しています。</li>
-        <li><strong>ルール設定</strong>タブで、最低間隔日数（既定120日）・新規採用職員の除外期間（既定6ヶ月）・ペア重複の遡り年度数（既定2年度）、常時除外する所属（チェックボックスで選択）、育休等による除外期間（職員番号・開始日・終了日）、月別の課除外ルールを設定します。</li>
+        <li>画面上部で<strong>処理期</strong>（年度の前期＝4〜9月／後期＝10〜翌3月）を選びます。以降の作業はすべてこの処理期に対するものになります。新しい期は「処理期を追加」で作成でき、直前の処理期の「市民課経験者」「常時除外する所属」を自動的に引き継ぎます。</li>
+        <li><strong>名簿管理</strong>タブは上から順に作業します。まず「1. Excel名簿データの取り込み」で人事データを取り込み（部課長級・外局・秘書・運転手・会計年度任用職員・派遣は自動的に除外されます）、「2. 職員名簿」で内容と市民課経験・派遣（除外）を確認、名簿に無い職員がいれば「3. 職員を追加」で個別登録します。</li>
+        <li><strong>ルール設定</strong>タブで、最低間隔日数（既定120日）・新規採用職員の除外期間（既定6ヶ月）・ペア重複の遡り年度数（既定2年度）、常時除外する所属（チェックボックスで選択）、育休等による除外期間（Excel取込または職員番号・開始日・終了日で個別登録）、月別の課除外ルールを設定します。</li>
         <li><strong>行事管理</strong>タブで、年度ごとに行事（産業まつり・花火大会等）の日程と除外する所属を登録します。リードタイムを設定すると、行事日から遡った期間も自動的に除外されます。</li>
-        <li><strong>勤務表作成</strong>タブで対象期間を入力し「土日・祝日・年末年始を自動抽出」を押すと指定日が一覧化されます（年末年始は12/28〜1/3を曜日を問わず含みます）。不要な日は対象から外せます。</li>
+        <li><strong>勤務表作成</strong>タブでは対象期間が処理期から自動入力されます。「土日・祝日・年末年始を自動抽出」を押すと指定日が一覧化されます（年末年始は12/28〜1/3を曜日を問わず含みます）。不要な日は対象から外せます。</li>
         <li>「勤務表を作成する」を押すと、係長級1名・主事級1名の組合せを自動で割り当てます。日直のペアは同性で組み、半期の前半（4〜6月・10〜12月）は女性、後半（7〜9月・1〜3月）は男性を割り当てます。資格要件（係長級または市民課経験者が最低1名。係長級は必ず入るため実質的には市民課経験の有無が主事級選定に影響します）・同一課の回避・ペアの重複回避（過去2年度）・120日間隔・年末年始やGWの重複回避・育休等の除外期間を踏まえます。</li>
         <li>「要確認」の行は、これらの制約を段階的に緩和しても自動割当できなかった日です。理由を確認し、名簿やルールを調整するか、必要に応じて手動で調整してください。</li>
         <li>内容を確認したら「確定・履歴に保存」を押すと履歴に記録されます。</li>

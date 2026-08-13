@@ -220,14 +220,49 @@ function requiredGenderForDate(date) {
   const month = date.getMonth() + 1;
   return [4, 5, 6, 10, 11, 12].includes(month) ? 'F' : 'M';
 }
-/** 育休等の登録期間内で日直の対象外となる職員か（職員番号で照合） */
+/** 育休等の登録期間内で日直の対象外となる職員か（職員番号で照合）。終了日が未設定の場合は期限なしとして扱う */
 function isOnLeave(staff, date, leaves) {
   if (!Array.isArray(leaves) || !staff.number) return false;
   return leaves.some((lv) => {
     if (!lv || String(lv.staffNumber) !== String(staff.number)) return false;
-    if (!lv.startDate || !lv.endDate) return false;
-    return date >= parseISO(lv.startDate) && date <= parseISO(lv.endDate);
+    if (!lv.startDate) return false;
+    if (date < parseISO(lv.startDate)) return false;
+    if (!lv.endDate) return true; // 終了日未定＝復帰まで対象外
+    return date <= parseISO(lv.endDate);
   });
+}
+
+/* ------------------------------------------------------------
+ * 処理期（年度の前期＝4〜9月／後期＝10〜翌3月）
+ * ------------------------------------------------------------ */
+/** その日が属する処理期の半期区分を返す（H1=前期 4〜9月／H2=後期 10〜翌3月） */
+function fiscalHalfOf(d) {
+  const month = d.getMonth() + 1;
+  return month >= 4 && month <= 9 ? 'H1' : 'H2';
+}
+/** 処理期ID（例：2026-H1） */
+function periodIdOf(fiscalYear, half) {
+  return `${fiscalYear}-${half}`;
+}
+/** 処理期の対象期間（前期＝4/1〜9/30、後期＝10/1〜翌3/31） */
+function periodRange(fiscalYear, half) {
+  return half === 'H1'
+    ? { startDate: `${fiscalYear}-04-01`, endDate: `${fiscalYear}-09-30` }
+    : { startDate: `${fiscalYear}-10-01`, endDate: `${fiscalYear + 1}-03-31` };
+}
+/** 処理期の表示名（例：2026年度 前期） */
+function periodLabelOf(fiscalYear, half) {
+  return `${fiscalYear}年度 ${half === 'H1' ? '前期' : '後期'}`;
+}
+/** ひとつ前の処理期（前期の前は前年度の後期） */
+function previousPeriodOf(fiscalYear, half) {
+  return half === 'H2'
+    ? { fiscalYear, half: 'H1' }
+    : { fiscalYear: fiscalYear - 1, half: 'H2' };
+}
+/** その日が属する処理期 */
+function periodOfDate(d) {
+  return { fiscalYear: fiscalYearOf(d), half: fiscalHalfOf(d) };
 }
 
 /* ------------------------------------------------------------
@@ -462,6 +497,12 @@ if (typeof module !== 'undefined' && module.exports) {
     standingExcludedReason,
     requiredGenderForDate,
     isOnLeave,
+    fiscalHalfOf,
+    periodIdOf,
+    periodRange,
+    periodLabelOf,
+    previousPeriodOf,
+    periodOfDate,
     buildPairLastFiscalYear,
     isPairBanned,
     pairKey,
