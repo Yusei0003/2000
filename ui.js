@@ -1426,6 +1426,25 @@ function renderGenResultTable() {
   document.getElementById('gen-warning-summary').innerHTML = draftResults.length
     ? `<p class="hint">合計 ${draftResults.length} 日 / 要確認 ${warnCount} 日</p>`
     : '';
+
+  const unassignedEl = document.getElementById('gen-unassigned-summary');
+  if (unassignedEl) {
+    if (!draftResults.length) {
+      unassignedEl.textContent = '';
+    } else {
+      const genTargetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts));
+      const assignedIds = new Set();
+      draftResults.forEach((r) => {
+        if (r.seniorId) assignedIds.add(r.seniorId);
+        if (r.juniorId) assignedIds.add(r.juniorId);
+      });
+      const genUnassigned = genTargetStaff.filter((s) => !assignedIds.has(s.id));
+      unassignedEl.textContent = genUnassigned.length
+        ? `今回の作成分で割り当てられなかった対象職員（${genUnassigned.length}名）：${genUnassigned.map((s) => s.name).join('、')}`
+        : '対象職員は全員、今回の作成分で少なくとも1回は割り当てられています。';
+    }
+  }
+
   document.getElementById('gen-confirm').disabled = draftResults.length === 0;
   document.getElementById('gen-export').disabled = draftResults.length === 0;
   document.getElementById('gen-pdf').disabled = draftResults.length === 0;
