@@ -913,9 +913,17 @@ function initOptions() {
 }
 
 /** 育休等による除外期間：職員番号・区分・開始日・終了日の一覧表示 */
+/** 育休・産休期間が処理期の範囲と重なるか（開始日が処理期終了日以前、かつ終了日未定または処理期開始日以降） */
+function leaveOverlapsPeriod(lv, p) {
+  if (lv.startDate > p.endDate) return false;
+  if (lv.endDate && lv.endDate < p.startDate) return false;
+  return true;
+}
 function renderLeaveTable() {
   const tbody = document.getElementById('leave-tbody');
-  const sorted = [...leaves].sort((a, b) => (a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : 0));
+  const p = currentPeriod();
+  const visible = leaves.filter((lv) => leaveOverlapsPeriod(lv, p));
+  const sorted = [...visible].sort((a, b) => (a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : 0));
   tbody.innerHTML = sorted
     .map((lv) => {
       const s = staff.find((x) => String(x.number) === String(lv.staffNumber));
@@ -934,7 +942,7 @@ function renderLeaveTable() {
     })
     .join('');
   const countEl = document.getElementById('leave-count');
-  if (countEl) countEl.textContent = `${leaves.length} 件`;
+  if (countEl) countEl.textContent = `${visible.length} 件` + (leaves.length !== visible.length ? `（全処理期では ${leaves.length} 件）` : '');
   tbody.querySelectorAll('[data-del]').forEach((btn) => {
     btn.addEventListener('click', () => {
       leaves = leaves.filter((lv) => lv.id !== btn.dataset.del);
@@ -1093,6 +1101,10 @@ function initLeaveForm() {
     const startDate = document.getElementById('lv-start').value;
     const endDate = document.getElementById('lv-end').value || null;
     if (!staffNumber || !startDate) return;
+    if (!staff.some((s) => String(s.number) === staffNumber)) {
+      alert(`職員番号「${staffNumber}」は名簿に登録されていません。名簿にある職員番号のみ登録できます。`);
+      return;
+    }
     if (endDate && startDate > endDate) {
       alert('終了日は開始日以降の日付にしてください。');
       return;
@@ -1194,10 +1206,11 @@ function populateFiscalYearSelect() {
   const keep = currentEventYear;
   sel.innerHTML = sorted.map((y) => `<option value="${y}" ${y === keep ? 'selected' : ''}>${y}年度</option>`).join('');
   sel.value = String(keep);
-  sel.addEventListener('change', () => {
+  sel.onchange = () => {
     currentEventYear = Number(sel.value);
     renderEventTable();
-  });
+    renderPrevYearEventReference();
+  };
 }
 function renderEventDeptOptions() {
   const sel = document.getElementById('ev-depts');
@@ -1235,10 +1248,40 @@ function renderEventTable() {
     });
   });
 }
+/** 参考表示：ひとつ前の年度に登録済みの行事一覧（読み取り専用） */
+function renderPrevYearEventReference() {
+  const el = document.getElementById('ev-prev-year-ref');
+  if (!el) return;
+  const prevYear = currentEventYear - 1;
+  document.getElementById('ev-prev-year-ref-title').textContent = `${prevYear}年度の登録状況（参考）`;
+  const list = fiscalEvents.filter((e) => e.fiscalYear === prevYear).sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1);
+  if (!list.length) {
+    el.innerHTML = `<span class="empty-hint">${prevYear}年度の行事は登録されていません。</span>`;
+    return;
+  }
+  el.innerHTML = `
+    <table>
+      <thead><tr><th>行事名</th><th>行事日</th><th>除外開始日</th><th>除外する所属</th></tr></thead>
+      <tbody>
+        ${list
+          .map(
+            (e) => `
+        <tr>
+          <td>${escapeHtml(e.name || '')}</td>
+          <td>${escapeHtml(e.date || '')}${e.endDate && e.endDate !== e.date ? ' 〜 ' + escapeHtml(e.endDate) : ''}</td>
+          <td>${escapeHtml(e.excludeFrom || '')}</td>
+          <td>${(e.depts || []).map(escapeHtml).join('、')}</td>
+        </tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>`;
+}
 function initEventForm() {
   populateFiscalYearSelect();
   renderEventDeptOptions();
   renderEventTable();
+  renderPrevYearEventReference();
 
   document.getElementById('ev-date').addEventListener('change', recalcExcludeFrom);
   document.getElementById('ev-lead').addEventListener('change', recalcExcludeFrom);
@@ -1527,6 +1570,7 @@ function initHistoryPeriodFilter() {
   sel.addEventListener('change', () => {
     historyPeriodFilter = sel.value;
     renderHistoryTable();
+    renderCheckTable();
   });
 }
 
@@ -1551,14 +1595,78 @@ document.addEventListener('click', (e) => {
 /* ------------------------------------------------------------
  * 変更届の反映（確定済み履歴の編集）
  * ------------------------------------------------------------ */
+/** 変更申請のスクリーンショットをOCRで読み取り、交代後の氏名・申請日時をプレフィルする。
+ *  読み取り結果は下書きとして入力欄にセットするだけで、反映には引き続き「反映する」の操作が必要。 */
+async function runChangeOcr(file, targetDate, candidates) {
+  const statusEl = document.getElementById('change-ocr-status');
+  if (typeof Tesseract === 'undefined') {
+    if (statusEl) statusEl.textContent = 'OCR機能を読み込めませんでした。手入力をご利用ください。';
+    return;
+  }
+  if (statusEl) statusEl.textContent = '画像を読み取っています…（数秒かかることがあります）';
+  let worker;
+  try {
+    worker = await Tesseract.createWorker('jpn', 1, {
+      workerPath: 'vendor/tesseract-worker.min.js',
+      corePath: 'vendor/',
+      langPath: 'vendor/',
+      gzip: true,
+    });
+    const { data } = await worker.recognize(file);
+    const text = data.text;
+
+    const nameRaw = extractLabelValue(text, '交代相手氏名');
+    const appliedRaw = extractLabelValue(text, '申請日');
+    const changedDateRaw = extractLabelValue(text, '変更する日付');
+
+    const messages = [];
+    const matched = nameRaw ? bestNameMatch(nameRaw, candidates) : null;
+    if (matched) {
+      document.getElementById('change-new-staff').value = matched.id;
+      messages.push(`交代後の氏名：${matched.name} を選択しました（読み取り結果「${nameRaw}」）`);
+    } else if (nameRaw) {
+      messages.push(`交代相手氏名「${nameRaw}」を読み取りましたが、名簿の職員と一致しませんでした。手動で選択してください。`);
+    } else {
+      messages.push('交代相手氏名を読み取れませんでした。手動で選択してください。');
+    }
+
+    const appliedAt = parseOcrDateTime(appliedRaw);
+    if (appliedAt) {
+      document.getElementById('change-applied-at').value = appliedAt;
+      messages.push(`申請日時：${appliedAt.replace('T', ' ')} を入力しました`);
+    } else {
+      messages.push('申請日時を読み取れませんでした。手動で入力してください。');
+    }
+
+    const changedDate = parseOcrDate(changedDateRaw);
+    if (changedDate && changedDate !== targetDate) {
+      messages.push(`⚠ 読み取った変更対象日（${changedDate}）が、この行の日付（${targetDate}）と一致しません。別の変更届の画像でないかご確認ください。`);
+    }
+
+    if (statusEl) statusEl.innerHTML = messages.map((m) => escapeHtml(m)).join('<br>') + '<br>内容を確認のうえ「反映する」を押してください。';
+  } catch (err) {
+    if (statusEl) statusEl.textContent = '読み取りに失敗しました：' + (err && err.message ? err.message : String(err)) + '（手入力をご利用ください）';
+  } finally {
+    if (worker) await worker.terminate();
+  }
+}
 function openChangeModal(date, level) {
   const record = history.find((r) => r.date === date);
   if (!record) return;
   const currentName = level === 'senior' ? record.seniorName : record.juniorName;
-  const options = staff
-    .filter((s) => s.level === level && s.active !== false)
+  const candidates = staff.filter((s) => s.level === level && s.active !== false);
+  const options = candidates
     .map((s) => `<option value="${s.id}">${escapeHtml(s.name)}（${escapeHtml(s.dept)}）</option>`)
     .join('');
+
+  const isFileProtocol = location.protocol === 'file:';
+  const ocrSectionHtml = isFileProtocol
+    ? `<p class="hint">スクリーンショットからの読み取りは、この画面を <code>file://</code> で直接開いている場合は使用できません。<code>python3 -m http.server</code> 等でこのフォルダを配信して開くと使用できます（手入力はそのままお使いいただけます）。</p>`
+    : `
+      <label>変更申請のスクリーンショットから読み取る（任意）
+        <input type="file" id="change-ocr-input" accept="image/*">
+      </label>
+      <p class="hint" id="change-ocr-status"></p>`;
 
   const root = document.getElementById('modal-root');
   root.innerHTML = `
@@ -1566,6 +1674,7 @@ function openChangeModal(date, level) {
       <div class="modal-box">
         <h3>交代を反映（${escapeHtml(date)}・${LEVEL_LABEL[level]}）</h3>
         <p class="hint">現在：${escapeHtml(currentName || '未定')}</p>
+        ${ocrSectionHtml}
         <div class="grid-form">
           <label>交代後の氏名
             <select id="change-new-staff"><option value="">選択してください</option>${options}</select>
@@ -1585,6 +1694,13 @@ function openChangeModal(date, level) {
   document.getElementById('change-modal-backdrop').addEventListener('click', (e) => {
     if (e.target.id === 'change-modal-backdrop') closeChangeModal();
   });
+  const ocrInput = document.getElementById('change-ocr-input');
+  if (ocrInput) {
+    ocrInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) runChangeOcr(file, date, candidates);
+    });
+  }
   document.getElementById('change-confirm').addEventListener('click', () => {
     const newId = document.getElementById('change-new-staff').value;
     const appliedAtRaw = document.getElementById('change-applied-at').value;
@@ -1790,9 +1906,10 @@ function staffDutyDates(staffId) {
 }
 function renderCheckTable() {
   const tbody = document.getElementById('check-tbody');
+  const scoped = visibleHistory(); // 履歴一覧と同じ表示フィルタ（既定：選択中の処理期）を使う
   const countMap = new Map();
   const lastMap = new Map();
-  history.forEach((r) => {
+  scoped.forEach((r) => {
     [
       [r.seniorId, r.date],
       [r.juniorId, r.date],
@@ -1803,6 +1920,23 @@ function renderCheckTable() {
       if (!cur || date > cur) lastMap.set(id, date);
     });
   });
+
+  const standingDepts = currentPeriod().standingExcludedDepts;
+  const targetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, standingDepts));
+  const unassigned = targetStaff.filter((s) => !countMap.get(s.id));
+  const summaryEl = document.getElementById('check-unassigned-summary');
+  if (summaryEl) {
+    const scopeLabel =
+      historyPeriodFilter === 'all'
+        ? '全期間'
+        : historyPeriodFilter === 'unassigned'
+        ? '未分類の履歴'
+        : (periodById(historyPeriodFilter) || currentPeriod()).label;
+    summaryEl.textContent = unassigned.length
+      ? `【${scopeLabel}】未割当の職員（${unassigned.length}名）：${unassigned.map((s) => s.name).join('、')}`
+      : `【${scopeLabel}】対象職員は全員、少なくとも1回は割り当てられています。`;
+  }
+
   const rows = staff
     .map((s) => ({ s, count: countMap.get(s.id) || 0, last: lastMap.get(s.id) || '' }))
     .sort((a, b) => a.count - b.count);

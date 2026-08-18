@@ -217,11 +217,6 @@ function standingExcludedReason(staff, standingExcludedDepts) {
   return null;
 }
 
-/** その日の必須性別（半期の前半＝女性、後半＝男性）。4-6月・10-12月は女性、7-9月・1-3月は男性 */
-function requiredGenderForDate(date) {
-  const month = date.getMonth() + 1;
-  return [4, 5, 6, 10, 11, 12].includes(month) ? 'F' : 'M';
-}
 /** 育休等の登録期間内で日直の対象外となる職員か（職員番号で照合）。終了日が未設定の場合は期限なしとして扱う */
 function isOnLeave(staff, date, leaves) {
   if (!Array.isArray(leaves) || !staff.number) return false;
@@ -392,12 +387,11 @@ function generateAssignments({
       });
     }
 
-    const requiredGender = requiredGenderForDate(date);
-    const eligibleBase = (level) =>
+    const eligibleBase = (level, gender) =>
       activeStaff.filter(
         (s) =>
           s.level === level &&
-          s.gender === requiredGender &&
+          s.gender === gender &&
           !isOnLeave(s, date, leaves) &&
           ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
           !bannedBySpecial.has(s.id) &&
@@ -405,37 +399,58 @@ function generateAssignments({
           passesGap(s.id, date, minGapDays, lastDateMap)
       );
 
-    const seniorPool = sortCandidates(eligibleBase('senior'), countMap, lastDateMap);
-    const juniorPool = sortCandidates(eligibleBase('junior'), countMap, lastDateMap);
-
     const pairOpts = { pairLastFY, currentFY, pairLookbackYears };
-    let pair = null;
-    let relaxedStage = 0;
     const stages = [
       { avoidSameDept: true, avoidPairRepeat: true, requireQualification: true },
       { avoidSameDept: true, avoidPairRepeat: false, requireQualification: true },
       { avoidSameDept: false, avoidPairRepeat: false, requireQualification: true },
       { avoidSameDept: false, avoidPairRepeat: false, requireQualification: false },
     ];
-    for (let i = 0; i < stages.length; i++) {
-      pair = findPair(seniorPool, juniorPool, { ...stages[i], ...pairOpts });
-      if (pair) {
-        relaxedStage = i;
-        break;
+    /** 指定した性別のみで候補プールを作り、段階的緩和でペアを探す */
+    const tryGender = (gender) => {
+      const seniorPool = sortCandidates(eligibleBase('senior', gender), countMap, lastDateMap);
+      const juniorPool = sortCandidates(eligibleBase('junior', gender), countMap, lastDateMap);
+      let pair = null;
+      let relaxedStage = 0;
+      for (let i = 0; i < stages.length; i++) {
+        pair = findPair(seniorPool, juniorPool, { ...stages[i], ...pairOpts });
+        if (pair) {
+          relaxedStage = i;
+          break;
+        }
+      }
+      if (!pair && seniorPool.length && juniorPool.length) {
+        pair = { senior: seniorPool[0], junior: juniorPool[0] };
+        relaxedStage = 4;
+      }
+      return { seniorPool, juniorPool, pair, relaxedStage };
+    };
+
+    // 枯渇ベース：まず女性のみで探し、女性の候補（係長級・主事級のいずれか）が枯渇していて
+    // ペアが組めない場合に限り男性のみで探す。ペアは常に同性。
+    let genderUsed = 'F';
+    let result = tryGender('F');
+    let resultM = null;
+    if (!result.pair) {
+      resultM = tryGender('M');
+      if (resultM.pair) {
+        result = resultM;
+        genderUsed = 'M';
       }
     }
-    if (!pair && seniorPool.length && juniorPool.length) {
-      pair = { senior: seniorPool[0], junior: juniorPool[0] };
-      relaxedStage = 4;
-    }
+    const { pair, relaxedStage } = result;
 
     const chosenSenior = pair ? pair.senior : null;
     const chosenJunior = pair ? pair.junior : null;
 
     const reasons = [];
-    if (!seniorPool.length) reasons.push(`係長級（${GENDER_LABEL[requiredGender]}）の候補者がいません`);
-    if (!juniorPool.length) reasons.push(`主事級（${GENDER_LABEL[requiredGender]}）の候補者がいません`);
-    if (chosenSenior && chosenJunior) {
+    if (!pair) {
+      if (!result.seniorPool.length) reasons.push('女性の係長級候補が枯渇しています');
+      if (!result.juniorPool.length) reasons.push('女性の主事級候補が枯渇しています');
+      const m = resultM || tryGender('M');
+      if (!m.seniorPool.length) reasons.push('男性の係長級候補もいません');
+      if (!m.juniorPool.length) reasons.push('男性の主事級候補もいません');
+    } else {
       if (relaxedStage >= 3) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
       if (relaxedStage >= 2) reasons.push('同一課の組合せになっています');
       if (relaxedStage >= 1) reasons.push('過去のペアと重複しています');
@@ -479,6 +494,81 @@ function generateAssignments({
   return results;
 }
 
+/* ------------------------------------------------------------
+ * 変更届スクリーンショットのOCR結果解析
+ * ------------------------------------------------------------ */
+/** OCRテキストから、指定したラベルの右側（同じ行）または次の行の値を取り出す。見つからなければnull */
+function extractLabelValue(text, label) {
+  const lines = String(text || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    const idx = lines[i].indexOf(label);
+    if (idx === -1) continue;
+    const rest = lines[i].slice(idx + label.length).trim();
+    if (rest) return rest;
+    if (lines[i + 1]) return lines[i + 1].trim();
+  }
+  return null;
+}
+/** 「2026年08月17日（月）14:12」のような文字列から datetime-local 用の値（YYYY-MM-DDTHH:mm）を取り出す */
+function parseOcrDateTime(text) {
+  if (!text) return null;
+  // 時刻のコロンはOCRで読み落とされやすい（例：「14:12」→「1412」）ため、コロンなしにも対応する
+  const m = String(text).match(/(\d{4})年(\d{1,2})月(\d{1,2})日[^\d]*?(\d{1,2}):?(\d{2})\b/);
+  if (!m) return null;
+  const [, y, mo, d, hh, mm] = m;
+  if (Number(hh) > 23 || Number(mm) > 59) return null;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(hh).padStart(2, '0')}:${mm}`;
+}
+/** 「2026年07月05日（日）」のような文字列から日付（YYYY-MM-DD）を取り出す（時刻なし） */
+function parseOcrDate(text) {
+  if (!text) return null;
+  const m = String(text).match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+  if (!m) return null;
+  const [, y, mo, d] = m;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+/** レーベンシュタイン距離（編集距離） */
+function levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...new Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+/** OCRで読み取った氏名の文字列（全角/半角スペース混じり）を、候補職員リストとあいまい一致させる。
+ *  一致度が低い場合は null（誤読対策のため、無理にマッチさせない） */
+function bestNameMatch(rawName, candidates) {
+  if (!rawName) return null;
+  const normalize = (s) => String(s || '').replace(/[\s　]+/g, '');
+  const target = normalize(rawName);
+  if (!target) return null;
+  let best = null;
+  let bestDist = Infinity;
+  candidates.forEach((c) => {
+    const name = normalize(c.name);
+    if (!name) return;
+    const dist = levenshtein(target, name);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = c;
+    }
+  });
+  if (!best) return null;
+  const threshold = Math.max(1, Math.floor(normalize(best.name).length * 0.34));
+  return bestDist <= threshold ? best : null;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     toISO,
@@ -497,7 +587,6 @@ if (typeof module !== 'undefined' && module.exports) {
     isQualified,
     isStandingExcluded,
     standingExcludedReason,
-    requiredGenderForDate,
     isOnLeave,
     fiscalHalfOf,
     periodIdOf,
@@ -512,5 +601,10 @@ if (typeof module !== 'undefined' && module.exports) {
     WEEKDAY_LABEL,
     GENDER_LABEL,
     LEVEL_LABEL,
+    extractLabelValue,
+    parseOcrDateTime,
+    parseOcrDate,
+    levenshtein,
+    bestNameMatch,
   };
 }

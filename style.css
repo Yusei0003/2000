@@ -210,10 +210,12 @@ textarea {
 
 .table-wrap {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 60vh;
   border: 1px solid var(--border);
   border-radius: 8px;
 }
-.table-wrap.small-table { max-height: 260px; overflow-y: auto; }
+.table-wrap.small-table { max-height: 260px; }
 
 table {
   width: 100%;
