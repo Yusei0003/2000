@@ -1430,7 +1430,7 @@ function renderGenResultTable() {
   const unassignedEl = document.getElementById('gen-unassigned-summary');
   if (unassignedEl) {
     if (!draftResults.length) {
-      unassignedEl.textContent = '';
+      unassignedEl.innerHTML = '';
     } else {
       const genTargetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts));
       const assignedIds = new Set();
@@ -1439,9 +1439,30 @@ function renderGenResultTable() {
         if (r.juniorId) assignedIds.add(r.juniorId);
       });
       const genUnassigned = genTargetStaff.filter((s) => !assignedIds.has(s.id));
-      unassignedEl.textContent = genUnassigned.length
-        ? `今回の作成分で割り当てられなかった対象職員（${genUnassigned.length}名）：${genUnassigned.map((s) => s.name).join('、')}`
-        : '対象職員は全員、今回の作成分で少なくとも1回は割り当てられています。';
+      if (!genUnassigned.length) {
+        unassignedEl.innerHTML = '<p style="margin:0;font-weight:600">対象職員は全員、今回の作成分で少なくとも1回は割り当てられています。</p>';
+      } else {
+        const explainCtx = {
+          dutyDates: draftResults.map((r) => ({ date: r.date })),
+          results: draftResults,
+          staffList: staff,
+          monthRules,
+          eventExclusions: computeEventExclusions(),
+          history,
+          minGapDays: settings.minGapDays,
+          newHireMonths: settings.newHireMonths,
+          leaves,
+        };
+        const items = genUnassigned
+          .map(
+            (s) =>
+              `<li><strong>${escapeHtml(s.name)}</strong>（${LEVEL_LABEL[s.level]}・${escapeHtml(s.dept)}）：${escapeHtml(
+                explainUnassignedStaff(s, explainCtx)
+              )}</li>`
+          )
+          .join('');
+        unassignedEl.innerHTML = `<p style="margin:0 0 4px;font-weight:600">今回の作成分で割り当てられなかった対象職員（${genUnassigned.length}名）</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
+      }
     }
   }
 

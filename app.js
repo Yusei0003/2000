@@ -495,6 +495,97 @@ function generateAssignments({
 }
 
 /* ------------------------------------------------------------
+ * 未割当職員の理由説明
+ * ------------------------------------------------------------ */
+/**
+ * 今回の作成分（dutyDates／results）で staffMember が一度も割り当てられなかった理由を説明する文字列を返す。
+ * 完全なシミュレーションではなく、各対象日について「本人の属性で明らかに対象外だったか」を積み上げて説明する。
+ */
+function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, monthRules, eventExclusions, history, minGapDays, newHireMonths, leaves }) {
+  if (!staffMember.gender) {
+    return '性別が未設定のため割当対象になりません（職員名簿でご確認ください）。';
+  }
+
+  const lastDateMap = new Map();
+  (history || []).forEach((h) => {
+    [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => {
+      const d = parseISO(h.date);
+      const prevLast = lastDateMap.get(id);
+      if (!prevLast || d > prevLast) lastDateMap.set(id, d);
+    });
+  });
+
+  let genderSkipped = 0;
+  let blockedLeave = 0;
+  let blockedNewHire = 0;
+  let blockedGap = 0;
+  let eligibleButNotChosen = 0;
+  const deptLabels = new Set();
+
+  dutyDates.forEach((dd) => {
+    const date = parseISO(dd.date);
+    const rec = (results || []).find((r) => r.date === dd.date);
+    if (rec && rec.seniorId) {
+      const seniorStaff = (staffList || []).find((x) => x.id === rec.seniorId);
+      if (seniorStaff && seniorStaff.gender && seniorStaff.gender !== staffMember.gender) {
+        genderSkipped++;
+        return;
+      }
+    }
+
+    if (isOnLeave(staffMember, date, leaves)) {
+      blockedLeave++;
+      return;
+    }
+
+    const month = date.getMonth() + 1;
+    const excludedDepts = new Set();
+    (monthRules || []).forEach((r) => {
+      if (r.months.includes(month)) r.depts.forEach((dep) => excludedDepts.add(dep));
+    });
+    (eventExclusions || []).forEach((e) => {
+      const start = parseISO(e.date);
+      const end = parseISO(e.endDate || e.date);
+      if (date >= start && date <= end) e.depts.forEach((dep) => excludedDepts.add(dep));
+    });
+    const deptHit = [...excludedDepts].find((dep) => staffMember.dept && staffMember.dept.includes(dep));
+    if (deptHit) {
+      deptLabels.add(deptHit);
+      return;
+    }
+
+    if (!passesNewHire(staffMember, date, newHireMonths)) {
+      blockedNewHire++;
+      return;
+    }
+    if (!passesGap(staffMember.id, date, minGapDays, lastDateMap)) {
+      blockedGap++;
+      return;
+    }
+    eligibleButNotChosen++;
+  });
+
+  const consideredDays = dutyDates.length - genderSkipped;
+  if (consideredDays === 0) {
+    const other = staffMember.gender === 'M' ? '女性' : '男性';
+    return `対象日はすべて${other}でペアが組めたため、対象になりませんでした（枯渇ベースのルールにより${other}が優先されました）。`;
+  }
+
+  const parts = [];
+  if (blockedLeave > 0) parts.push(`育休・産休等の除外期間中（${blockedLeave}日）`);
+  if (deptLabels.size > 0) parts.push(`所属の除外ルールに該当（${[...deptLabels].join('・')}）`);
+  if (blockedNewHire > 0) parts.push(`採用から${newHireMonths}ヶ月未満のため対象外（${blockedNewHire}日）`);
+  if (blockedGap > 0) parts.push(`前回勤務日から${minGapDays}日未満のため対象外（${blockedGap}日）`);
+  if (eligibleButNotChosen > 0) parts.push(`候補ではあったものの他の職員やペアが優先された（${eligibleButNotChosen}日）`);
+  if (genderSkipped > 0) {
+    const other = staffMember.gender === 'M' ? '女性' : '男性';
+    parts.push(`${other}でペアが組めたため対象外だった日（${genderSkipped}日）`);
+  }
+
+  return parts.length ? parts.join('、') + '。' : '理由を特定できませんでした。';
+}
+
+/* ------------------------------------------------------------
  * 変更届スクリーンショットのOCR結果解析
  * ------------------------------------------------------------ */
 /** OCRテキストから、指定したラベルの右側（同じ行）または次の行の値を取り出す。見つからなければnull */
@@ -598,6 +689,7 @@ if (typeof module !== 'undefined' && module.exports) {
     isPairBanned,
     pairKey,
     generateAssignments,
+    explainUnassignedStaff,
     WEEKDAY_LABEL,
     GENDER_LABEL,
     LEVEL_LABEL,
