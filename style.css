@@ -370,3 +370,72 @@ select[multiple] {
 @media (max-width: 640px) {
   tbody td, thead th { white-space: normal; }
 }
+
+.doc-switch-btn {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.doc-switch-btn.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+.doc-content {
+  font-size: 14px;
+  line-height: 1.75;
+}
+.doc-content h2 {
+  font-size: 19px;
+  margin: 28px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.doc-content h2:first-child { margin-top: 0; }
+.doc-content h3 { font-size: 16px; margin: 22px 0 10px; }
+.doc-content h4 { font-size: 14px; margin: 16px 0 8px; }
+.doc-content p { margin: 0 0 12px; }
+.doc-content ul, .doc-content ol { padding-left: 22px; margin: 0 0 12px; }
+.doc-content li { margin-bottom: 4px; }
+.doc-content table { font-size: 13px; }
+.doc-content .table-wrap { margin: 0 0 16px; max-height: none; }
+.doc-content code {
+  background: #eef2f7;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.9em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.doc-content .doc-code {
+  background: #1f2937;
+  color: #e5e7eb;
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin: 0 0 16px;
+}
+.doc-content .doc-code code { background: none; padding: 0; color: inherit; }
+.doc-content hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+.doc-toc {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 24px;
+  font-size: 13px;
+}
+.doc-toc strong { display: block; margin-bottom: 8px; }
+.doc-toc ul { list-style: none; padding: 0; margin: 0; columns: 2; }
+.doc-toc li { margin-bottom: 4px; break-inside: avoid; }
+.doc-toc a { color: var(--primary); text-decoration: none; }
+.doc-toc a:hover { text-decoration: underline; }
+@media (max-width: 640px) {
+  .doc-toc ul { columns: 1; }
+}

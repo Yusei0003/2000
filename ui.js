@@ -482,6 +482,144 @@ function initTabs() {
       if (btn.dataset.tab === 'rules') {
         renderStandingRuleList();
       }
+      if (btn.dataset.tab === 'docs') {
+        renderDocTab();
+      }
+    });
+  });
+}
+
+/* ------------------------------------------------------------
+ * 仕様書・設計書の表示（docs-content.js に埋め込まれたMarkdownを簡易パーサで描画）
+ * ------------------------------------------------------------ */
+let currentDocKind = 'spec';
+function mdInline(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+function renderMarkdownTable(lines) {
+  const rows = lines.map((l) => {
+    let t = l.trim();
+    if (t.startsWith('|')) t = t.slice(1);
+    if (t.endsWith('|')) t = t.slice(0, -1);
+    return t.split('|').map((c) => c.trim());
+  });
+  const header = rows[0] || [];
+  const body = rows.slice(2); // 1行目=ヘッダー、2行目=区切り線（---）を除く
+  let html = '<div class="table-wrap"><table><thead><tr>' + header.map((h) => `<th>${mdInline(h)}</th>`).join('') + '</tr></thead><tbody>';
+  body.forEach((r) => {
+    html += '<tr>' + r.map((c) => `<td>${mdInline(c)}</td>`).join('') + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+/** アプリで使う範囲のMarkdown（見出し・表・リスト・強調・コード・水平線・段落）のみに対応した簡易パーサ。
+ *  file:// では fetch() が使えないため docs-content.js に埋め込んだ文字列を対象に描画する。 */
+function renderMarkdownDoc(md) {
+  const lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
+  let html = '';
+  const toc = [];
+  let inList = null;
+  let i = 0;
+  const closeList = () => {
+    if (inList) {
+      html += `</${inList}>`;
+      inList = null;
+    }
+  };
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*$/.test(line)) {
+      closeList();
+      i++;
+      continue;
+    }
+    if (/^-{3,}\s*$/.test(line.trim())) {
+      closeList();
+      html += '<hr>';
+      i++;
+      continue;
+    }
+    if (/^```/.test(line)) {
+      closeList();
+      const codeLines = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // 閉じる ``` を読み飛ばす
+      html += `<pre class="doc-code"><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
+      continue;
+    }
+    let m = line.match(/^(#{1,4})\s+(.*)$/);
+    if (m) {
+      closeList();
+      const hashes = m[1].length;
+      const text = m[2].trim();
+      const tag = hashes === 1 ? 'h2' : hashes === 2 ? 'h3' : hashes === 3 ? 'h4' : 'h5';
+      const id = `doc-h-${i}`;
+      if (hashes === 2) toc.push({ id, text });
+      html += `<${tag} id="${id}">${mdInline(text)}</${tag}>`;
+      i++;
+      continue;
+    }
+    if (line.trim().startsWith('|')) {
+      closeList();
+      const tbl = [];
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        tbl.push(lines[i]);
+        i++;
+      }
+      html += renderMarkdownTable(tbl);
+      continue;
+    }
+    if (/^\d+\.\s+/.test(line)) {
+      if (inList !== 'ol') {
+        closeList();
+        html += '<ol>';
+        inList = 'ol';
+      }
+      html += `<li>${mdInline(line.replace(/^\d+\.\s+/, ''))}</li>`;
+      i++;
+      continue;
+    }
+    if (/^-\s+/.test(line)) {
+      if (inList !== 'ul') {
+        closeList();
+        html += '<ul>';
+        inList = 'ul';
+      }
+      html += `<li>${mdInline(line.replace(/^-\s+/, ''))}</li>`;
+      i++;
+      continue;
+    }
+    closeList();
+    html += `<p>${mdInline(line.trim())}</p>`;
+    i++;
+  }
+  closeList();
+  const tocHtml = toc.length
+    ? `<nav class="doc-toc"><strong>目次</strong><ul>${toc.map((t) => `<li><a href="#${t.id}">${escapeHtml(t.text)}</a></li>`).join('')}</ul></nav>`
+    : '';
+  return tocHtml + html;
+}
+function renderDocTab() {
+  const container = document.getElementById('doc-content');
+  if (!container) return;
+  const md = currentDocKind === 'spec' ? (typeof SPEC_DOC_MD !== 'undefined' ? SPEC_DOC_MD : '') : (typeof DESIGN_DOC_MD !== 'undefined' ? DESIGN_DOC_MD : '');
+  container.innerHTML = md
+    ? renderMarkdownDoc(md)
+    : '<p class="hint">文書を読み込めませんでした（docs-content.js が見つかりません。node build_docs.js を実行してください）。</p>';
+}
+function initDocsTab() {
+  document.querySelectorAll('.doc-switch-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.doc-switch-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentDocKind = btn.dataset.doc;
+      renderDocTab();
     });
   });
 }
@@ -2423,6 +2561,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initLeaveXlsxImport();
   initMaternityXlsxImport();
   initPeriodBar();
+  initDocsTab();
 
   renderStaffTable();
   renderMonthRuleTable();

@@ -50,6 +50,7 @@
   <button class="tab-btn" data-tab="generate">勤務表作成</button>
   <button class="tab-btn" data-tab="history">履歴・確認</button>
   <button class="tab-btn" data-tab="help">使い方</button>
+  <button class="tab-btn" data-tab="docs">仕様書・設計書</button>
 </nav>
 
 <main>
@@ -421,6 +422,17 @@
       </ul>
     </div>
   </section>
+
+  <!-- ============ 仕様書・設計書 ============ -->
+  <section id="panel-docs" class="tab-panel">
+    <div class="card">
+      <div class="row-actions" style="margin-bottom:14px">
+        <button class="doc-switch-btn active" data-doc="spec">仕様書</button>
+        <button class="doc-switch-btn" data-doc="design">設計書</button>
+      </div>
+      <div id="doc-content" class="doc-content"></div>
+    </div>
+  </section>
 </main>
 
 <div id="toast" class="toast"></div>
@@ -430,6 +442,7 @@
 <script src="vendor/html2canvas.min.js"></script>
 <script src="vendor/jspdf.umd.min.js"></script>
 <script src="vendor/tesseract.min.js"></script>
+<script src="docs-content.js"></script>
 <script src="app.js"></script>
 <script src="ui.js"></script>
 </body>
