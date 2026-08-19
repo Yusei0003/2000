@@ -1533,8 +1533,14 @@ function renderGenResultTable() {
       <td>${r.date}</td>
       <td>${WEEKDAY_LABEL[r.weekday]}</td>
       <td>${escapeHtml(r.holidayName || '')}</td>
-      <td>${renderStaffSelect(i, 'senior', r.seniorId)}</td>
-      <td>${renderStaffSelect(i, 'junior', r.juniorId)}</td>
+      <td>
+        <span class="assign-name-chip" draggable="true" data-idx="${i}" data-level="senior" title="ドラッグして他の日・欄の職員と入れ替えられます">${r.seniorName ? escapeHtml(r.seniorName) : '未定'}</span>
+        ${renderStaffSelect(i, 'senior', r.seniorId)}
+      </td>
+      <td>
+        <span class="assign-name-chip" draggable="true" data-idx="${i}" data-level="junior" title="ドラッグして他の日・欄の職員と入れ替えられます">${r.juniorName ? escapeHtml(r.juniorName) : '未定'}</span>
+        ${renderStaffSelect(i, 'junior', r.juniorId)}
+      </td>
       <td>${r.status === 'ok' ? 'OK' : '要確認：' + escapeHtml(r.reason)}</td>
     </tr>`
     )
@@ -1547,11 +1553,43 @@ function renderGenResultTable() {
       const s = staffById(sel.value) || null;
       draftResults[idx][level + 'Id'] = s ? s.id : null;
       draftResults[idx][level + 'Name'] = s ? s.name : '';
-      if (draftResults[idx].seniorId && draftResults[idx].juniorId) {
-        draftResults[idx].status = 'ok';
-        draftResults[idx].reason = '（手動で修正済み）';
-        draftResults[idx].manuallyEdited = true;
+      revalidateDraftResult(idx);
+      renderGenResultTable();
+    });
+  });
+
+  let dragSource = null;
+  tbody.querySelectorAll('.assign-name-chip').forEach((chip) => {
+    chip.addEventListener('dragstart', (e) => {
+      dragSource = { idx: Number(chip.dataset.idx), level: chip.dataset.level };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', chip.textContent);
+      chip.classList.add('dragging');
+    });
+    chip.addEventListener('dragend', () => {
+      dragSource = null;
+      tbody.querySelectorAll('.assign-name-chip').forEach((c) => c.classList.remove('dragging', 'drag-over'));
+    });
+    chip.addEventListener('dragover', (e) => {
+      if (!dragSource) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      chip.classList.add('drag-over');
+    });
+    chip.addEventListener('dragleave', () => {
+      chip.classList.remove('drag-over');
+    });
+    chip.addEventListener('drop', (e) => {
+      e.preventDefault();
+      chip.classList.remove('drag-over');
+      if (!dragSource) return;
+      const target = { idx: Number(chip.dataset.idx), level: chip.dataset.level };
+      if (dragSource.idx === target.idx && dragSource.level === target.level) {
+        dragSource = null;
+        return;
       }
+      swapDraftResultSlots(dragSource, target);
+      dragSource = null;
       renderGenResultTable();
     });
   });
@@ -1610,12 +1648,89 @@ function renderGenResultTable() {
   document.getElementById('gen-export').disabled = draftResults.length === 0;
   document.getElementById('gen-pdf').disabled = draftResults.length === 0;
 }
+/** level='senior'（1人目）は必ず係長級から選ぶ。level='junior'（2人目）は係長級・主事級のどちらも選べる
+ *（1日2名のうち少なくとも1名が係長級であればよいため、係長級2名の組合せも許可している）。 */
 function renderStaffSelect(idx, level, currentId) {
-  const options = staff
-    .filter((s) => s.level === level && s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts))
-    .map((s) => `<option value="${s.id}" ${s.id === currentId ? 'selected' : ''}>${escapeHtml(s.name)}（${escapeHtml(s.dept)}）</option>`)
+  const standingDepts = currentPeriod().standingExcludedDepts;
+  const pool = (level === 'senior' ? staff.filter((s) => s.level === 'senior') : staff).filter(
+    (s) => s.active !== false && !isStandingExcluded(s, standingDepts)
+  );
+  const options = pool
+    .map((s) => {
+      const label = level === 'senior' ? `${escapeHtml(s.name)}（${escapeHtml(s.dept)}）` : `${escapeHtml(s.name)}（${escapeHtml(s.dept)}・${LEVEL_LABEL[s.level]}）`;
+      return `<option value="${s.id}" ${s.id === currentId ? 'selected' : ''}>${label}</option>`;
+    })
     .join('');
   return `<select class="result-select" data-idx="${idx}" data-level="${level}"><option value="">未定</option>${options}</select>`;
+}
+/** 手動での入れ替え・選択後に、その日の組合せが実際のルールに反しないかを確認し、
+ *  違反があれば理由の一覧を返す（空配列なら問題なし）。入れ替え自体は常に許可し、
+ *  違反時は「要確認」表示に切り替えるだけにとどめる。 */
+function validateManualPair(seniorRec, juniorRec) {
+  const reasons = [];
+  if (!seniorRec || !juniorRec) {
+    reasons.push('片方が未定です');
+    return reasons;
+  }
+  if (seniorRec.level !== 'senior' && juniorRec.level !== 'senior') {
+    reasons.push('係長級が含まれていません');
+  }
+  if (seniorRec.gender && juniorRec.gender && seniorRec.gender !== juniorRec.gender) {
+    reasons.push('性別が異なる組合せです');
+  }
+  if (seniorRec.dept && juniorRec.dept && seniorRec.dept === juniorRec.dept) {
+    reasons.push('同一課の組合せです');
+  }
+  if (seniorRec.level === 'senior' && juniorRec.level === 'senior' && isSeniorTitleClash(seniorRec, juniorRec)) {
+    reasons.push('課長補佐・副主幹の組合せです');
+  }
+  return reasons;
+}
+/** 手動での変更（プルダウン選択・ドラッグ入れ替え）後に、その行の状態・理由を再計算する。
+ *  同一課回避・性別一致・課長補佐/副主幹の組合せに加え、同一処理期内での2回目の割当
+ *  （他の日の作成分・確定済み履歴の両方を見る）も再判定する。 */
+function revalidateDraftResult(idx) {
+  const r = draftResults[idx];
+  if (!r) return;
+  const s = r.seniorId ? staffById(r.seniorId) : null;
+  const j = r.juniorId ? staffById(r.juniorId) : null;
+  const violations = validateManualPair(s, j);
+
+  const p = currentPeriod();
+  const usedElsewhere = new Set();
+  history.forEach((h) => {
+    if (h.periodId !== p.id) return;
+    if (h.seniorId) usedElsewhere.add(h.seniorId);
+    if (h.juniorId) usedElsewhere.add(h.juniorId);
+  });
+  draftResults.forEach((other, oi) => {
+    if (oi === idx) return;
+    if (other.seniorId) usedElsewhere.add(other.seniorId);
+    if (other.juniorId) usedElsewhere.add(other.juniorId);
+  });
+  if ((r.seniorId && usedElsewhere.has(r.seniorId)) || (r.juniorId && usedElsewhere.has(r.juniorId))) {
+    violations.push('同一処理期内で2回目の割当です');
+  }
+
+  r.status = violations.length ? 'warning' : 'ok';
+  r.reason = violations.length ? violations.join(' / ') : '（手動で修正済み）';
+  r.manuallyEdited = true;
+}
+/** ドラッグ&ドロップで2つのセル（行×スロット）の職員を入れ替える。列（1人目／2人目）をまたいでも可 */
+function swapDraftResultSlots(a, b) {
+  const ra = draftResults[a.idx];
+  const rb = draftResults[b.idx];
+  if (!ra || !rb) return;
+  const aId = ra[a.level + 'Id'];
+  const aName = ra[a.level + 'Name'];
+  const bId = rb[b.level + 'Id'];
+  const bName = rb[b.level + 'Name'];
+  ra[a.level + 'Id'] = bId;
+  ra[a.level + 'Name'] = bName;
+  rb[b.level + 'Id'] = aId;
+  rb[b.level + 'Name'] = aName;
+  revalidateDraftResult(a.idx);
+  if (b.idx !== a.idx) revalidateDraftResult(b.idx);
 }
 
 function initGenerateRun() {

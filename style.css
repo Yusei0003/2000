@@ -280,6 +280,25 @@ select.result-select {
 .chip-list .chip button:hover { background: #fbd5d5; }
 .chip-list .empty-hint { color: var(--muted); font-size: 13px; }
 
+.assign-name-chip {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 9px;
+  margin-bottom: 4px;
+  background: #eef2f7;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: grab;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.assign-name-chip:active { cursor: grabbing; }
+.assign-name-chip.dragging { opacity: 0.4; }
+.assign-name-chip.drag-over { background: #dbe6fb; border-color: var(--primary); }
+
 select[multiple] {
   border: 1px solid var(--border);
   border-radius: 6px;

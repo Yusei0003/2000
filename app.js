@@ -276,11 +276,9 @@ function passesGap(staffId, date, minGapDays, lastDateMap) {
   if (!last) return true;
   return diffDays(last, date) >= minGapDays;
 }
-function sortCandidates(list, countMap, lastDateMap) {
+/** 担当回数の少なさ・前回勤務日の古さで並べる（未割当を最優先） */
+function sortByCountAndRecency(list, countMap, lastDateMap) {
   return [...list].sort((a, b) => {
-    const qa = isQualified(a) ? 0 : 1;
-    const qb = isQualified(b) ? 0 : 1;
-    if (qa !== qb) return qa - qb;
     const countDiff = (countMap.get(a.id) || 0) - (countMap.get(b.id) || 0);
     if (countDiff !== 0) return countDiff;
     const la = lastDateMap.get(a.id);
@@ -291,9 +289,40 @@ function sortCandidates(list, countMap, lastDateMap) {
     return 0;
   });
 }
-/** ペアキー（係長級id + 主事級id） */
-function pairKey(seniorId, juniorId) {
-  return seniorId + '|' + juniorId;
+/** 2つの配列を交互に並べる（同順位のタイブレークで一方のレベルだけが
+ *  系統的に優先されるのを避けるため。例：[s1,s2],[j1,j2] → [s1,j1,s2,j2]） */
+function interleave(a, b) {
+  const out = [];
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (i < a.length) out.push(a[i]);
+    if (i < b.length) out.push(b[i]);
+  }
+  return out;
+}
+/** 資格要件を満たす職員を優先しつつ、担当回数の少なさ・前回勤務日の古さで並べる。
+ *  同一レベルの候補プール（係長級のみ／主事級のみ）向け。異なるレベルを混在させる
+ *  相方候補プールでは、係長級が常に資格要件を満たす（isQualified=true）ため使わない
+ *  （使うと係長級が主事級より不当に優先されてしまう）。 */
+function sortCandidates(list, countMap, lastDateMap) {
+  return sortByCountAndRecency(list, countMap, lastDateMap).sort((a, b) => {
+    const qa = isQualified(a) ? 0 : 1;
+    const qb = isQualified(b) ? 0 : 1;
+    return qa - qb;
+  });
+}
+/** ペアキー（2名のid。係長級2名ペアもあるため順序に依存しないキーにする） */
+function pairKey(idA, idB) {
+  return [idA, idB].sort().join('|');
+}
+/** 係長級2名を組む場合に避けたい職名の組合せ（課長補佐＋課長補佐／課長補佐＋副主幹／副主幹＋副主幹）。
+ *  双方の職名が「課長補佐」「副主幹」のいずれかに該当する場合に true を返す */
+const SENIOR_TITLE_CLASH = ['課長補佐', '副主幹'];
+function isSeniorTitleClashTitle(title) {
+  return SENIOR_TITLE_CLASH.some((t) => title && title.includes(t));
+}
+function isSeniorTitleClash(a, b) {
+  return isSeniorTitleClashTitle(a.title) && isSeniorTitleClashTitle(b.title);
 }
 /** 直近2年度以内（既定）に組んだペアかどうかを判定するための「最終年度」マップを構築 */
 function buildPairLastFiscalYear(history) {
@@ -313,14 +342,18 @@ function isPairBanned(seniorId, juniorId, pairLastFY, currentFY, pairLookbackYea
   if (lastFY === undefined) return false;
   return currentFY - lastFY < pairLookbackYears;
 }
-/** 制約段階を指定して、条件を満たす最初のペアを探す */
-function findPair(seniorPool, juniorPool, opts) {
+/** 制約段階を指定して、条件を満たす最初のペアを探す。
+ *  seniorPool（必ず係長級）から1名、partnerPool（係長級・主事級を問わない相方候補）から
+ *  もう1名を選ぶ。1日2名のうち少なくとも1名が係長級であればよいため、係長級2名の組合せも対象。 */
+function findPair(seniorPool, partnerPool, opts) {
   for (const s of seniorPool) {
-    for (const j of juniorPool) {
-      if (opts.avoidSameDept && s.dept && j.dept && s.dept === j.dept) continue;
-      if (opts.avoidPairRepeat && isPairBanned(s.id, j.id, opts.pairLastFY, opts.currentFY, opts.pairLookbackYears)) continue;
-      if (opts.requireQualification && !isQualified(s) && !isQualified(j)) continue;
-      return { senior: s, junior: j };
+    for (const p of partnerPool) {
+      if (p.id === s.id) continue;
+      if (opts.avoidSameDept && s.dept && p.dept && s.dept === p.dept) continue;
+      if (opts.avoidPairRepeat && isPairBanned(s.id, p.id, opts.pairLastFY, opts.currentFY, opts.pairLookbackYears)) continue;
+      if (opts.avoidTitleClash && p.level === 'senior' && isSeniorTitleClash(s, p)) continue;
+      if (opts.requireQualification && !isQualified(s) && !isQualified(p)) continue;
+      return { senior: s, junior: p };
     }
   }
   return null;
@@ -405,53 +438,67 @@ function generateAssignments({
       );
 
     const pairOpts = { pairLastFY, currentFY, pairLookbackYears };
+    // 1日2名のうち少なくとも1名が係長級であればよい（係長級2名の組合せも可）。
+    // avoidTitleClash：係長級2名を組む場合、双方の職名が「課長補佐」「副主幹」のいずれかに
+    // 該当する組合せ（課長補佐＋課長補佐／課長補佐＋副主幹／副主幹＋副主幹）を避ける。
     const stages = [
-      { avoidSameDept: true, avoidPairRepeat: true, requireQualification: true },
-      { avoidSameDept: true, avoidPairRepeat: false, requireQualification: true },
-      { avoidSameDept: false, avoidPairRepeat: false, requireQualification: true },
-      { avoidSameDept: false, avoidPairRepeat: false, requireQualification: false },
+      { avoidSameDept: true, avoidPairRepeat: true, avoidTitleClash: true, requireQualification: true },
+      { avoidSameDept: true, avoidPairRepeat: false, avoidTitleClash: true, requireQualification: true },
+      { avoidSameDept: true, avoidPairRepeat: false, avoidTitleClash: false, requireQualification: true },
+      { avoidSameDept: false, avoidPairRepeat: false, avoidTitleClash: false, requireQualification: true },
+      { avoidSameDept: false, avoidPairRepeat: false, avoidTitleClash: false, requireQualification: false },
     ];
     /** 指定した性別のみで候補プールを作り、段階的緩和でペアを探す。
-     *  同一処理期内はまず「今期まだ割り当てていない職員」だけでペアを探し（1人1回ルール）、
+     *  seniorPool（必ず係長級）から1名、combinedPool（係長級・主事級を問わない相方候補）から
+     *  もう1名を選ぶ。同一処理期内はまず「今期まだ割り当てていない職員」だけでペアを探し（1人1回ルール）、
      *  そのレベル・性別の候補が今期割当済みの職員しかいない（枯渇した）場合に限り、今期2回目の割当を許可する。 */
     const tryGender = (gender) => {
       const seniorPool = sortCandidates(eligibleBase('senior', gender), countMap, lastDateMap);
       const juniorPool = sortCandidates(eligibleBase('junior', gender), countMap, lastDateMap);
+      const combinedPool = sortByCountAndRecency(interleave(seniorPool, juniorPool), countMap, lastDateMap);
       const freshSeniorPool = periodId ? seniorPool.filter((s) => !periodUsedIds.has(s.id)) : seniorPool;
-      const freshJuniorPool = periodId ? juniorPool.filter((s) => !periodUsedIds.has(s.id)) : juniorPool;
+      const freshCombinedPool = periodId ? combinedPool.filter((s) => !periodUsedIds.has(s.id)) : combinedPool;
 
       let pair = null;
       let relaxedStage = 0;
       for (let i = 0; i < stages.length; i++) {
-        pair = findPair(freshSeniorPool, freshJuniorPool, { ...stages[i], ...pairOpts });
+        pair = findPair(freshSeniorPool, freshCombinedPool, { ...stages[i], ...pairOpts });
         if (pair) {
           relaxedStage = i;
           break;
         }
       }
-      if (!pair && freshSeniorPool.length && freshJuniorPool.length) {
-        pair = { senior: freshSeniorPool[0], junior: freshJuniorPool[0] };
-        relaxedStage = 4;
+      if (!pair && freshSeniorPool.length) {
+        const anchor = freshSeniorPool[0];
+        const partner = freshCombinedPool.find((p) => p.id !== anchor.id);
+        if (partner) {
+          pair = { senior: anchor, junior: partner };
+          relaxedStage = stages.length;
+        }
       }
 
       let repeat = false;
       if (!pair && periodId) {
         // 今期未割当の候補が枯渇しているため、今期2回目の割当を許可する
         for (let i = 0; i < stages.length; i++) {
-          pair = findPair(seniorPool, juniorPool, { ...stages[i], ...pairOpts });
+          pair = findPair(seniorPool, combinedPool, { ...stages[i], ...pairOpts });
           if (pair) {
             relaxedStage = i;
             repeat = true;
             break;
           }
         }
-        if (!pair && seniorPool.length && juniorPool.length) {
-          pair = { senior: seniorPool[0], junior: juniorPool[0] };
-          relaxedStage = 4;
-          repeat = true;
+        if (!pair && seniorPool.length) {
+          const anchor = seniorPool[0];
+          const partner = combinedPool.find((p) => p.id !== anchor.id);
+          if (partner) {
+            pair = { senior: anchor, junior: partner };
+            relaxedStage = stages.length;
+            repeat = true;
+          }
         }
       }
-      return { seniorPool, juniorPool, pair, relaxedStage, repeat };
+      return { seniorPool, juniorPool, combinedPool, pair, relaxedStage, repeat };
     };
 
     // 枯渇ベース：まず女性のみで探し、女性の候補（係長級・主事級のいずれか）が枯渇していて
@@ -473,15 +520,22 @@ function generateAssignments({
 
     const reasons = [];
     if (!pair) {
-      if (!result.seniorPool.length) reasons.push('女性の係長級候補が枯渇しています');
-      if (!result.juniorPool.length) reasons.push('女性の主事級候補が枯渇しています');
+      if (!result.seniorPool.length) {
+        reasons.push('女性の係長級候補が枯渇しています');
+      } else if (!result.combinedPool.some((p) => p.id !== result.seniorPool[0].id)) {
+        reasons.push('女性の相方候補がいません');
+      }
       const m = resultM || tryGender('M');
-      if (!m.seniorPool.length) reasons.push('男性の係長級候補もいません');
-      if (!m.juniorPool.length) reasons.push('男性の主事級候補もいません');
+      if (!m.seniorPool.length) {
+        reasons.push('男性の係長級候補もいません');
+      } else if (!m.combinedPool.some((p) => p.id !== m.seniorPool[0].id)) {
+        reasons.push('男性の相方候補もいません');
+      }
     } else {
       if (repeat) reasons.push('同一処理期内で2回目の割当です');
-      if (relaxedStage >= 3) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
-      if (relaxedStage >= 2) reasons.push('同一課の組合せになっています');
+      if (relaxedStage >= 4) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
+      if (relaxedStage >= 3) reasons.push('同一課の組合せになっています');
+      if (relaxedStage >= 2) reasons.push('課長補佐・副主幹の組合せになっています');
       if (relaxedStage >= 1) reasons.push('過去のペアと重複しています');
     }
 
@@ -719,6 +773,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildPairLastFiscalYear,
     isPairBanned,
     pairKey,
+    isSeniorTitleClash,
     generateAssignments,
     explainUnassignedStaff,
     WEEKDAY_LABEL,
