@@ -338,11 +338,13 @@ function generateAssignments({
   pairLookbackYears = 2,
   standingExcludedDepts = [],
   leaves = [], // [{staffNumber, startDate, endDate}] 育休等による除外期間
+  periodId = null, // 指定すると、同一処理期内は原則1人1回の割当にする
 }) {
   const countMap = new Map();
   const lastDateMap = new Map();
   const specialUse = new Map(); // key -> Set(staffId)
   const pairLastFY = buildPairLastFiscalYear(history);
+  const periodUsedIds = new Set(); // 同一処理期内で既に割り当て済みの職員（1人1回ルール用）
 
   history.forEach((h) => {
     [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => {
@@ -354,6 +356,9 @@ function generateAssignments({
     if (h.specialPeriodKey) {
       if (!specialUse.has(h.specialPeriodKey)) specialUse.set(h.specialPeriodKey, new Set());
       [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => specialUse.get(h.specialPeriodKey).add(id));
+    }
+    if (periodId && h.periodId === periodId) {
+      [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => periodUsedIds.add(id));
     }
   });
 
@@ -406,24 +411,47 @@ function generateAssignments({
       { avoidSameDept: false, avoidPairRepeat: false, requireQualification: true },
       { avoidSameDept: false, avoidPairRepeat: false, requireQualification: false },
     ];
-    /** 指定した性別のみで候補プールを作り、段階的緩和でペアを探す */
+    /** 指定した性別のみで候補プールを作り、段階的緩和でペアを探す。
+     *  同一処理期内はまず「今期まだ割り当てていない職員」だけでペアを探し（1人1回ルール）、
+     *  そのレベル・性別の候補が今期割当済みの職員しかいない（枯渇した）場合に限り、今期2回目の割当を許可する。 */
     const tryGender = (gender) => {
       const seniorPool = sortCandidates(eligibleBase('senior', gender), countMap, lastDateMap);
       const juniorPool = sortCandidates(eligibleBase('junior', gender), countMap, lastDateMap);
+      const freshSeniorPool = periodId ? seniorPool.filter((s) => !periodUsedIds.has(s.id)) : seniorPool;
+      const freshJuniorPool = periodId ? juniorPool.filter((s) => !periodUsedIds.has(s.id)) : juniorPool;
+
       let pair = null;
       let relaxedStage = 0;
       for (let i = 0; i < stages.length; i++) {
-        pair = findPair(seniorPool, juniorPool, { ...stages[i], ...pairOpts });
+        pair = findPair(freshSeniorPool, freshJuniorPool, { ...stages[i], ...pairOpts });
         if (pair) {
           relaxedStage = i;
           break;
         }
       }
-      if (!pair && seniorPool.length && juniorPool.length) {
-        pair = { senior: seniorPool[0], junior: juniorPool[0] };
+      if (!pair && freshSeniorPool.length && freshJuniorPool.length) {
+        pair = { senior: freshSeniorPool[0], junior: freshJuniorPool[0] };
         relaxedStage = 4;
       }
-      return { seniorPool, juniorPool, pair, relaxedStage };
+
+      let repeat = false;
+      if (!pair && periodId) {
+        // 今期未割当の候補が枯渇しているため、今期2回目の割当を許可する
+        for (let i = 0; i < stages.length; i++) {
+          pair = findPair(seniorPool, juniorPool, { ...stages[i], ...pairOpts });
+          if (pair) {
+            relaxedStage = i;
+            repeat = true;
+            break;
+          }
+        }
+        if (!pair && seniorPool.length && juniorPool.length) {
+          pair = { senior: seniorPool[0], junior: juniorPool[0] };
+          relaxedStage = 4;
+          repeat = true;
+        }
+      }
+      return { seniorPool, juniorPool, pair, relaxedStage, repeat };
     };
 
     // 枯渇ベース：まず女性のみで探し、女性の候補（係長級・主事級のいずれか）が枯渇していて
@@ -438,7 +466,7 @@ function generateAssignments({
         genderUsed = 'M';
       }
     }
-    const { pair, relaxedStage } = result;
+    const { pair, relaxedStage, repeat } = result;
 
     const chosenSenior = pair ? pair.senior : null;
     const chosenJunior = pair ? pair.junior : null;
@@ -451,6 +479,7 @@ function generateAssignments({
       if (!m.seniorPool.length) reasons.push('男性の係長級候補もいません');
       if (!m.juniorPool.length) reasons.push('男性の主事級候補もいません');
     } else {
+      if (repeat) reasons.push('同一処理期内で2回目の割当です');
       if (relaxedStage >= 3) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
       if (relaxedStage >= 2) reasons.push('同一課の組合せになっています');
       if (relaxedStage >= 1) reasons.push('過去のペアと重複しています');
@@ -464,7 +493,7 @@ function generateAssignments({
       juniorId: chosenJunior ? chosenJunior.id : null,
       seniorName: chosenSenior ? chosenSenior.name : '',
       juniorName: chosenJunior ? chosenJunior.name : '',
-      status: chosenSenior && chosenJunior && relaxedStage === 0 ? 'ok' : 'warning',
+      status: chosenSenior && chosenJunior && relaxedStage === 0 && !repeat ? 'ok' : 'warning',
       reason: reasons.join(' / '),
       specialPeriodKey: special ? special.key : null,
       manuallyEdited: false,
@@ -476,10 +505,12 @@ function generateAssignments({
     if (chosenSenior) {
       countMap.set(chosenSenior.id, (countMap.get(chosenSenior.id) || 0) + 1);
       lastDateMap.set(chosenSenior.id, date);
+      periodUsedIds.add(chosenSenior.id);
     }
     if (chosenJunior) {
       countMap.set(chosenJunior.id, (countMap.get(chosenJunior.id) || 0) + 1);
       lastDateMap.set(chosenJunior.id, date);
+      periodUsedIds.add(chosenJunior.id);
     }
     if (chosenSenior && chosenJunior) {
       pairLastFY.set(pairKey(chosenSenior.id, chosenJunior.id), currentFY);
@@ -576,7 +607,7 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
   if (deptLabels.size > 0) parts.push(`所属の除外ルールに該当（${[...deptLabels].join('・')}）`);
   if (blockedNewHire > 0) parts.push(`採用から${newHireMonths}ヶ月未満のため対象外（${blockedNewHire}日）`);
   if (blockedGap > 0) parts.push(`前回勤務日から${minGapDays}日未満のため対象外（${blockedGap}日）`);
-  if (eligibleButNotChosen > 0) parts.push(`候補ではあったものの他の職員やペアが優先された（${eligibleButNotChosen}日）`);
+  if (eligibleButNotChosen > 0) parts.push(`候補ではあったが、今期の割当枠が他の職員で埋まったため選ばれなかった（1人1回が基本のルールのため・${eligibleButNotChosen}日）`);
   if (genderSkipped > 0) {
     const other = staffMember.gender === 'M' ? '女性' : '男性';
     parts.push(`${other}でペアが組めたため対象外だった日（${genderSkipped}日）`);

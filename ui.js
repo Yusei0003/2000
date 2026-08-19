@@ -4,7 +4,7 @@
  * 画面制御（app.js のロジックを利用してUIを組み立てる）
  * ============================================================ */
 
-const KEY_STAFF = 'duty_staff_v2';
+const KEY_STAFF = 'duty_staff_v2'; // 旧形式（処理期共通の名簿）。移行専用に読み込む
 const KEY_MONTH_RULES = 'duty_month_rules_v1';
 const KEY_FISCAL_EVENTS = 'duty_fiscal_events_v1';
 const KEY_SETTINGS = 'duty_settings_v2';
@@ -13,6 +13,9 @@ const KEY_TITLE_LEVEL_MAP = 'duty_title_level_map_v1';
 const KEY_LEAVES = 'duty_leaves_v1';
 const KEY_PERIODS = 'duty_periods_v1';
 const KEY_CURRENT_PERIOD = 'duty_current_period_v1';
+const KEY_STAFF_ID_MAP = 'duty_staff_id_map_v1'; // 職員番号→職員ID（処理期をまたいで同一人物を同一IDにするための恒久マップ）
+const KEY_PERIOD_STAFF = 'duty_period_staff_v1'; // 処理期ID→職員名簿（処理期ごとの名簿）
+const KEY_HISTORY_STAFF = 'duty_history_staff_v1'; // 勤務実績取込のみで登場する、どの処理期の名簿にもいない職員（表示名のみに使用）
 
 const DEFAULT_SETTINGS = {
   minGapDays: 120,
@@ -155,7 +158,6 @@ function migrateLegacyData() {
 }
 migrateLegacyData();
 
-let staff = load(KEY_STAFF, []);
 let monthRules = load(KEY_MONTH_RULES, DEFAULT_MONTH_RULES);
 let fiscalEvents = load(KEY_FISCAL_EVENTS, []);
 let settings = { ...DEFAULT_SETTINGS, ...load(KEY_SETTINGS, {}) };
@@ -165,6 +167,19 @@ let titleLevelMap = load(KEY_TITLE_LEVEL_MAP, {});
 let leaves = load(KEY_LEAVES, []);
 let periods = load(KEY_PERIODS, []);
 let currentPeriodId = load(KEY_CURRENT_PERIOD, null);
+let staffIdMap = load(KEY_STAFF_ID_MAP, {}); // 職員番号 -> 職員ID
+let periodStaff = load(KEY_PERIOD_STAFF, {}); // 処理期ID -> 職員名簿配列
+let historyStaffStubs = load(KEY_HISTORY_STAFF, []); // どの処理期の名簿にもいない、勤務実績のみの職員
+
+/** 職員番号に対応する恒久的な職員IDを返す（無ければ新規発行して記憶する） */
+function idForNumber(number) {
+  const key = String(number);
+  if (!staffIdMap[key]) {
+    staffIdMap[key] = uid('st');
+    save(KEY_STAFF_ID_MAP, staffIdMap);
+  }
+  return staffIdMap[key];
+}
 
 /* ------------------------------------------------------------
  * 処理期（年度の前期・後期ごとに作業を進めるための単位）
@@ -179,7 +194,6 @@ function buildPeriod(fiscalYear, half) {
     startDate: range.startDate,
     endDate: range.endDate,
     label: periodLabelOf(fiscalYear, half),
-    citizenExpNumbers: [],
     standingExcludedDepts: [],
     createdAt: new Date().toISOString(),
   };
@@ -187,12 +201,11 @@ function buildPeriod(fiscalYear, half) {
 function periodById(id) {
   return periods.find((p) => p.id === id) || null;
 }
-/** 処理期の導入前に登録された「市民課経験者」「常時除外する所属」を、現在の処理期へ移行する */
+/** 処理期の導入前に登録された「常時除外する所属」を、現在の処理期へ移行する */
 function migratePeriods() {
   if (periods.length) return;
   const cur = periodOfDate(new Date());
   const p = buildPeriod(cur.fiscalYear, cur.half);
-  p.citizenExpNumbers = staff.filter((s) => s.citizenExp && s.number).map((s) => String(s.number));
   p.standingExcludedDepts = Array.isArray(settings.standingExcludedDepts) ? [...settings.standingExcludedDepts] : [];
   periods.push(p);
   currentPeriodId = p.id;
@@ -214,42 +227,108 @@ function currentPeriod() {
     currentPeriodId = p.id;
     save(KEY_CURRENT_PERIOD, currentPeriodId);
   }
-  if (!Array.isArray(p.citizenExpNumbers)) p.citizenExpNumbers = [];
   if (!Array.isArray(p.standingExcludedDepts)) p.standingExcludedDepts = [];
   return p;
 }
 function sortPeriods() {
   periods.sort((a, b) => (a.fiscalYear - b.fiscalYear) || (a.half < b.half ? -1 : a.half > b.half ? 1 : 0));
 }
-/** 直前の処理期の内容（市民課経験者・常時除外所属）を引き継ぐ */
+/** 直前の処理期の「常時除外する所属」を引き継ぐ（市民課経験・派遣・7割措置は名簿取込時に職員番号単位で引き継がれる） */
 function copyFromPreviousPeriod(target) {
   const prev = previousPeriodOf(target.fiscalYear, target.half);
   const src = periodById(periodIdOf(prev.fiscalYear, prev.half));
   if (!src) return null;
-  const knownNumbers = new Set(staff.map((s) => String(s.number)));
-  target.citizenExpNumbers = (src.citizenExpNumbers || []).filter((n) => knownNumbers.has(String(n)));
-  const knownDepts = new Set(staff.map((s) => s.dept).filter(Boolean));
-  target.standingExcludedDepts = (src.standingExcludedDepts || []).filter((d) => knownDepts.has(d));
+  target.standingExcludedDepts = Array.isArray(src.standingExcludedDepts) ? [...src.standingExcludedDepts] : [];
   return src;
 }
-/** 処理期の市民課経験者指定を反映した職員配列を返す（app.js側は staff.citizenExp を見るため） */
-function staffForPeriod() {
+
+/* ------------------------------------------------------------
+ * 名簿（処理期ごと）
+ * ------------------------------------------------------------ */
+function currentPeriodStaffArray() {
+  const id = currentPeriod().id;
+  if (!periodStaff[id]) periodStaff[id] = [];
+  return periodStaff[id];
+}
+let _staffMapCache = null;
+function invalidateStaffMapCache() {
+  _staffMapCache = null;
+}
+/** 職員IDから職員を引く（処理期・履歴専用スタブを横断）。履歴・引継ぎ等、期をまたぐ表示専用 */
+function allKnownStaffMap() {
+  if (_staffMapCache) return _staffMapCache;
+  const map = new Map();
+  staff.forEach((s) => map.set(s.id, s));
+  Object.values(periodStaff).forEach((list) => list.forEach((s) => { if (!map.has(s.id)) map.set(s.id, s); }));
+  historyStaffStubs.forEach((s) => { if (!map.has(s.id)) map.set(s.id, s); });
+  _staffMapCache = map;
+  return map;
+}
+function resolveAnyStaff(id) {
+  return allKnownStaffMap().get(id) || null;
+}
+/** 現在の名簿（staff配列）を処理期の保存領域へ書き戻す */
+function savePeriodStaff() {
+  periodStaff[currentPeriod().id] = staff;
+  save(KEY_PERIOD_STAFF, periodStaff);
+  invalidateStaffMapCache();
+}
+/** 処理期切り替え時に staff を現在の処理期の名簿へ差し替える */
+function loadStaffForCurrentPeriod() {
+  staff = currentPeriodStaffArray();
+  invalidateStaffMapCache();
+}
+/** ひとつ前の処理期の名簿を職員番号で引けるマップ（引き継ぎ用） */
+function previousPeriodStaffMap() {
   const p = currentPeriod();
-  const set = new Set((p.citizenExpNumbers || []).map(String));
-  return staff.map((s) => ({ ...s, citizenExp: set.has(String(s.number)) }));
+  const prev = previousPeriodOf(p.fiscalYear, p.half);
+  const prevList = periodStaff[periodIdOf(prev.fiscalYear, prev.half)] || [];
+  const map = new Map();
+  prevList.forEach((s) => {
+    if (s.number) map.set(String(s.number), s);
+  });
+  return map;
 }
-/** 職員が現在の処理期で市民課経験者として指定されているか */
-function isCitizenExpInPeriod(s) {
-  return (currentPeriod().citizenExpNumbers || []).map(String).includes(String(s.number));
+
+/** 旧形式（処理期共通の名簿）から、処理期ごとの名簿へ一度だけ移行する。
+ *  既存の職員IDはそのまま引き継ぐため、確定済み履歴（seniorId/juniorId）は書き換え不要。
+ *  移行時点で登録済みの全処理期に同じ名簿を複製する（各処理期の実際の名簿は、以後のExcel再取込で正しくなる）。
+ *  所属が空の職員（勤務実績Excel取込で作られた履歴専用スタブ）は名簿には含めず、履歴専用スタブへ分離する。 */
+function migrateToPerPeriodStaff() {
+  if (localStorage.getItem(KEY_PERIOD_STAFF)) return;
+  const oldStaff = load(KEY_STAFF, []);
+  if (!oldStaff.length) {
+    save(KEY_PERIOD_STAFF, {});
+    return;
+  }
+  oldStaff.forEach((s) => {
+    if (s.number && !staffIdMap[String(s.number)]) staffIdMap[String(s.number)] = s.id;
+  });
+  save(KEY_STAFF_ID_MAP, staffIdMap);
+
+  const isStub = (s) => !s.dept;
+  const realStaff = oldStaff.filter((s) => !isStub(s));
+  const stubs = oldStaff.filter(isStub);
+
+  const newPeriodStaff = {};
+  periods.forEach((p) => {
+    const citizenSet = new Set((p.citizenExpNumbers || []).map(String));
+    newPeriodStaff[p.id] = realStaff.map((s) => ({
+      ...s,
+      deptHistory: Array.isArray(s.deptHistory) ? [...s.deptHistory] : [],
+      citizenExp: !!s.citizenExp || citizenSet.has(String(s.number)),
+    }));
+  });
+  periodStaff = newPeriodStaff;
+  save(KEY_PERIOD_STAFF, periodStaff);
+
+  historyStaffStubs = historyStaffStubs.concat(stubs);
+  save(KEY_HISTORY_STAFF, historyStaffStubs);
 }
-function setCitizenExpInPeriod(s, on) {
-  const p = currentPeriod();
-  const num = String(s.number);
-  const list = (p.citizenExpNumbers || []).map(String).filter((n) => n !== num);
-  if (on) list.push(num);
-  p.citizenExpNumbers = list;
-  save(KEY_PERIODS, periods);
-}
+migrateToPerPeriodStaff();
+
+let staff = [];
+loadStaffForCurrentPeriod();
 
 /** その処理期が「過去分」（終了日が今日より前）かどうか */
 function isPastPeriod(p) {
@@ -322,7 +401,7 @@ function initPeriodBar() {
       alert(`引き継ぎ元となる${periodLabelOf(prev.fiscalYear, prev.half)}が登録されていません。`);
       return;
     }
-    if (!confirm(`${src.label}の「市民課経験者」「常時除外する所属」を${p.label}へコピーします。現在の内容は上書きされます。よろしいですか？`)) {
+    if (!confirm(`${src.label}の「常時除外する所属」を${p.label}へコピーします。現在の内容は上書きされます。よろしいですか？`)) {
       return;
     }
     copyFromPreviousPeriod(p);
@@ -352,6 +431,7 @@ function initPeriodBar() {
 }
 /** 処理期の切り替え時に、処理期に依存する画面をまとめて再描画する */
 function renderAllForPeriod() {
+  loadStaffForCurrentPeriod();
   renderPeriodBar();
   renderStaffTable();
   renderStandingRuleList();
@@ -400,7 +480,7 @@ function initTabs() {
  * 名簿管理
  * ------------------------------------------------------------ */
 function staffById(id) {
-  return staff.find((s) => s.id === id);
+  return staff.find((s) => s.id === id) || null;
 }
 /** 名簿に登録済みの所属を、所属CD順に並べて返す（{name, code}の配列）。CDが無い所属は末尾に名前順で並ぶ */
 function sortedDeptList() {
@@ -454,7 +534,7 @@ function exclusionReason(s) {
   return standingExcludedReason(s, currentPeriod().standingExcludedDepts) || '';
 }
 function staffRowHtml(s, { showReason }) {
-  const citizen = isCitizenExpInPeriod(s);
+  const citizen = !!s.citizenExp;
   const autoCitizen = !citizen && effectiveCitizenExp({ ...s, citizenExp: false });
   return `
     <tr>
@@ -483,13 +563,14 @@ function attachStaffRowHandlers(tbody) {
     btn.addEventListener('click', () => {
       if (!confirm('この職員を削除しますか？（履歴の表示名は残ります）')) return;
       staff = staff.filter((s) => s.id !== btn.dataset.del);
-      save(KEY_STAFF, staff);
+      savePeriodStaff();
       renderStaffTable();
     });
   });
   tbody.querySelectorAll('.citizen-toggle').forEach((cb) => {
     cb.addEventListener('change', () => {
-      setCitizenExpInPeriod(staffById(cb.dataset.id), cb.checked);
+      staffById(cb.dataset.id).citizenExp = cb.checked;
+      savePeriodStaff();
       renderStaffTable();
     });
   });
@@ -497,7 +578,7 @@ function attachStaffRowHandlers(tbody) {
     cb.addEventListener('change', () => {
       const s = staffById(cb.dataset.id);
       s.dispatched = cb.checked;
-      save(KEY_STAFF, staff);
+      savePeriodStaff();
       renderStaffTable();
     });
   });
@@ -505,7 +586,7 @@ function attachStaffRowHandlers(tbody) {
     cb.addEventListener('change', () => {
       const s = staffById(cb.dataset.id);
       s.seventyPercent = cb.checked;
-      save(KEY_STAFF, staff);
+      savePeriodStaff();
       renderStaffTable();
     });
   });
@@ -516,6 +597,9 @@ function renderStaffTable() {
   const visible = staff.filter((s) => matchesStaffSearch(s, staffSearchQuery)).sort(compareByDeptCode);
   const excludedList = visible.filter((s) => s.active === false || isStandingExcluded(s, standingDepts));
   const targetList = visible.filter((s) => !(s.active === false || isStandingExcluded(s, standingDepts)));
+
+  const emptyNoteEl = document.getElementById('staff-empty-period-note');
+  if (emptyNoteEl) emptyNoteEl.classList.toggle('hidden', staff.length > 0);
 
   const targetTbody = document.getElementById('staff-tbody-target');
   targetTbody.innerHTML = targetList.map((s) => staffRowHtml(s, { showReason: false })).join('');
@@ -543,9 +627,11 @@ function initStaffSearch() {
 function initStaffForm() {
   document.getElementById('staff-form').addEventListener('submit', (e) => {
     e.preventDefault();
+    const number = document.getElementById('st-number').value.trim();
+    const carry = number ? previousPeriodStaffMap().get(number) : null;
     const rec = {
-      id: uid('st'),
-      number: document.getElementById('st-number').value.trim(),
+      id: number ? idForNumber(number) : uid('st'),
+      number,
       name: document.getElementById('st-name').value.trim(),
       level: document.getElementById('st-level').value,
       gender: null,
@@ -556,14 +642,14 @@ function initStaffForm() {
       hireDate: document.getElementById('st-hire').value || null,
       retireDate: null,
       deptHistory: [],
-      dispatched: false,
-      seventyPercent: false,
+      citizenExp: document.getElementById('st-citizen').checked || !!(carry && carry.citizenExp),
+      dispatched: !!(carry && carry.dispatched),
+      seventyPercent: !!(carry && carry.seventyPercent),
       active: document.getElementById('st-active').checked,
     };
     if (!rec.name || !rec.dept) return;
     staff.push(rec);
-    save(KEY_STAFF, staff);
-    if (document.getElementById('st-citizen').checked) setCitizenExpInPeriod(rec, true);
+    savePeriodStaff();
     renderStaffTable();
     e.target.reset();
     document.getElementById('st-active').checked = true;
@@ -580,14 +666,17 @@ function initStaffForm() {
     const text = document.getElementById('staff-import-text').value;
     if (!text.trim()) return;
     const rows = parseCsv(text).slice(1); // 先頭行はヘッダーとして除外
+    const prevMap = previousPeriodStaffMap();
     let count = 0;
     rows.forEach((cols) => {
       const [number, name, levelRaw, dept, citizenRaw, hireDate] = cols;
       if (!name || !dept) return;
       const level = levelRaw && levelRaw.includes('主事') ? 'junior' : 'senior';
+      const num = (number || '').trim();
+      const carry = num ? prevMap.get(num) : null;
       const rec = {
-        id: uid('st'),
-        number: (number || '').trim(),
+        id: num ? idForNumber(num) : uid('st'),
+        number: num,
         name: name.trim(),
         level,
         title: '',
@@ -597,13 +686,15 @@ function initStaffForm() {
         deptHistory: [],
         hireDate: (hireDate || '').trim() || null,
         retireDate: null,
+        citizenExp: /true|○|はい/i.test(citizenRaw || '') || !!(carry && carry.citizenExp),
+        dispatched: !!(carry && carry.dispatched),
+        seventyPercent: !!(carry && carry.seventyPercent),
         active: true,
       };
       staff.push(rec);
-      if (/true|○|はい/i.test(citizenRaw || '')) setCitizenExpInPeriod(rec, true);
       count++;
     });
-    save(KEY_STAFF, staff);
+    savePeriodStaff();
     renderStaffTable();
     document.getElementById('staff-import-text').value = '';
     document.getElementById('staff-import-box').classList.add('hidden');
@@ -612,7 +703,7 @@ function initStaffForm() {
 
   document.getElementById('staff-export-btn').addEventListener('click', () => {
     const rows = [['番号', '氏名', '級', '職名', '所属課', '係名', '市民課経験', '採用年月日']].concat(
-      staff.map((s) => [s.number, s.name, LEVEL_LABEL[s.level], s.title || '', s.dept, s.section || '', isCitizenExpInPeriod(s) ? 'TRUE' : 'FALSE', s.hireDate || ''])
+      staff.map((s) => [s.number, s.name, LEVEL_LABEL[s.level], s.title || '', s.dept, s.section || '', s.citizenExp ? 'TRUE' : 'FALSE', s.hireDate || ''])
     );
     downloadCsv('職員名簿.csv', rows);
   });
@@ -817,16 +908,23 @@ function initStaffXlsxImport() {
   });
   document.getElementById('staff-xlsx-confirm').addEventListener('click', () => {
     if (!staffXlsxRows) return;
+    if (staff.length && !confirm(`「${currentPeriod().label}」の現在の名簿（${staff.length}名）を、今回取り込む内容で置き換えます。よろしいですか？`)) {
+      return;
+    }
     document.querySelectorAll('.title-level-select').forEach((sel) => {
       titleLevelMap[sel.dataset.title] = sel.value;
     });
     save(KEY_TITLE_LEVEL_MAP, titleLevelMap);
 
-    const byNumber = new Map(staff.map((s) => [String(s.number), s]));
-    let added = 0;
-    let updated = 0;
+    const prevMap = previousPeriodStaffMap();
+    let imported = 0;
     let skipped = 0;
     let skippedByCategory = 0;
+    let carriedCitizen = 0;
+    let autoCitizen = 0;
+    let carriedDispatched = 0;
+    let carriedSeventy = 0;
+    const newStaff = [];
     staffXlsxRows.forEach((r) => {
       if (isExcludedCategory(r.category)) {
         skippedByCategory++;
@@ -838,56 +936,58 @@ function initStaffXlsxImport() {
         skipped++;
         return;
       }
-      const existing = byNumber.get(r.number);
-      if (existing) {
-        existing.name = r.name;
-        existing.level = level;
-        existing.title = r.title;
-        if (existing.dept && existing.dept !== r.dept && !existing.deptHistory.includes(existing.dept)) {
-          existing.deptHistory.push(existing.dept);
-        }
-        existing.dept = r.dept;
-        existing.deptCode = r.deptCode;
-        existing.gender = r.gender;
-        existing.section = r.section;
-        existing.sideJob = r.sideJob;
-        existing.hireDate = r.hireDate || existing.hireDate;
-        existing.active = true;
-        updated++;
-      } else {
-        const rec = {
-          id: uid('st'),
-          number: r.number,
-          name: r.name,
-          level,
-          title: r.title,
-          dept: r.dept,
-          deptCode: r.deptCode,
-          gender: r.gender,
-          section: r.section,
-          sideJob: r.sideJob,
-          citizenExp: false,
-          deptHistory: [],
-          hireDate: r.hireDate,
-          retireDate: null,
-          active: true,
-        };
-        staff.push(rec);
-        byNumber.set(r.number, rec);
-        added++;
-      }
+      const prev = prevMap.get(r.number);
+      const isCitizenDept = !!(r.dept && r.dept.includes('市民課'));
+      const carriedIsCitizen = !!(prev && prev.citizenExp);
+      const citizenExp = isCitizenDept || carriedIsCitizen;
+      if (isCitizenDept && !carriedIsCitizen) autoCitizen++;
+      else if (carriedIsCitizen) carriedCitizen++;
+      const dispatched = !!(prev && prev.dispatched);
+      if (dispatched) carriedDispatched++;
+      const seventyPercent = !!(prev && prev.seventyPercent);
+      if (seventyPercent) carriedSeventy++;
+      const deptHistory = prev ? [...(prev.deptHistory || [])] : [];
+      if (prev && prev.dept && prev.dept !== r.dept && !deptHistory.includes(prev.dept)) deptHistory.push(prev.dept);
+
+      newStaff.push({
+        id: idForNumber(r.number),
+        number: r.number,
+        name: r.name,
+        level,
+        title: r.title,
+        dept: r.dept,
+        deptCode: r.deptCode,
+        gender: r.gender,
+        section: r.section,
+        sideJob: r.sideJob,
+        citizenExp,
+        dispatched,
+        seventyPercent,
+        deptHistory,
+        hireDate: r.hireDate,
+        retireDate: null,
+        active: true,
+      });
+      imported++;
     });
-    save(KEY_STAFF, staff);
+    staff = newStaff;
+    savePeriodStaff();
     renderStaffTable();
     renderStandingRuleList();
     document.getElementById('staff-xlsx-input').value = '';
     document.getElementById('staff-xlsx-mapping-tbody').innerHTML = '';
     document.getElementById('staff-xlsx-mapping-box').classList.add('hidden');
     document.getElementById('staff-xlsx-no-mapping-note').classList.add('hidden');
-    document.getElementById('staff-xlsx-summary').textContent = '';
-    document.getElementById('staff-xlsx-confirm').disabled = true;
     staffXlsxRows = null;
-    showToast(`名簿を取り込みました（新規${added}件・更新${updated}件・対象外${skipped}件・区分除外${skippedByCategory}件）`);
+    document.getElementById('staff-xlsx-confirm').disabled = true;
+    const carryParts = [];
+    if (carriedCitizen || autoCitizen) carryParts.push(`市民課経験${carriedCitizen + autoCitizen}名（現所属からの自動判定${autoCitizen}名を含む）`);
+    if (carriedDispatched) carryParts.push(`派遣${carriedDispatched}名`);
+    if (carriedSeventy) carryParts.push(`7割措置${carriedSeventy}名`);
+    document.getElementById('staff-xlsx-summary').textContent =
+      `「${currentPeriod().label}」の名簿を ${imported} 件で置き換えました（対象外 ${skipped} 件・区分除外 ${skippedByCategory} 件）。` +
+      (carryParts.length ? `前回処理期から ${carryParts.join('・')} を引き継ぎました。` : '');
+    showToast('名簿を取り込みました');
   });
 }
 
@@ -1433,14 +1533,20 @@ function renderGenResultTable() {
       unassignedEl.innerHTML = '';
     } else {
       const genTargetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts));
+      const p = currentPeriod();
       const assignedIds = new Set();
+      history.forEach((h) => {
+        if (h.periodId !== p.id) return;
+        if (h.seniorId) assignedIds.add(h.seniorId);
+        if (h.juniorId) assignedIds.add(h.juniorId);
+      });
       draftResults.forEach((r) => {
         if (r.seniorId) assignedIds.add(r.seniorId);
         if (r.juniorId) assignedIds.add(r.juniorId);
       });
       const genUnassigned = genTargetStaff.filter((s) => !assignedIds.has(s.id));
       if (!genUnassigned.length) {
-        unassignedEl.innerHTML = '<p style="margin:0;font-weight:600">対象職員は全員、今回の作成分で少なくとも1回は割り当てられています。</p>';
+        unassignedEl.innerHTML = '<p style="margin:0;font-weight:600">対象職員は全員、今期すでに少なくとも1回は割り当てられています。</p>';
       } else {
         const explainCtx = {
           dutyDates: draftResults.map((r) => ({ date: r.date })),
@@ -1461,7 +1567,7 @@ function renderGenResultTable() {
               )}</li>`
           )
           .join('');
-        unassignedEl.innerHTML = `<p style="margin:0 0 4px;font-weight:600">今回の作成分で割り当てられなかった対象職員（${genUnassigned.length}名）</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
+        unassignedEl.innerHTML = `<p style="margin:0 0 4px;font-weight:600">今期まだ割り当てられていない対象職員（${genUnassigned.length}名）</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
       }
     }
   }
@@ -1486,7 +1592,7 @@ function initGenerateRun() {
       return;
     }
     draftResults = generateAssignments({
-      staffList: staffForPeriod(),
+      staffList: staff,
       dutyDates: targetDates,
       monthRules,
       eventExclusions: computeEventExclusions(),
@@ -1497,6 +1603,7 @@ function initGenerateRun() {
       pairLookbackYears: settings.pairLookbackYears,
       standingExcludedDepts: currentPeriod().standingExcludedDepts,
       leaves,
+      periodId: currentPeriod().id,
     });
     renderGenResultTable();
     showToast('勤務表を作成しました');
@@ -1778,7 +1885,9 @@ function closeChangeModal() {
  * 全データのバックアップ・復元（JSON）
  * ------------------------------------------------------------ */
 const BACKUP_KEYS = {
-  staff: KEY_STAFF,
+  staffIdMap: KEY_STAFF_ID_MAP,
+  periodStaff: KEY_PERIOD_STAFF,
+  historyStaff: KEY_HISTORY_STAFF,
   monthRules: KEY_MONTH_RULES,
   fiscalEvents: KEY_FISCAL_EVENTS,
   settings: KEY_SETTINGS,
@@ -1821,13 +1930,22 @@ function initBackup() {
         alert('バックアップファイルの読み込みに失敗しました（JSON形式ではありません）。');
         return;
       }
-      if (!payload || typeof payload !== 'object' || !payload.data || !Array.isArray(payload.data.staff)) {
+      const isNewFormat = payload && typeof payload === 'object' && payload.data && typeof payload.data.periodStaff === 'object';
+      const isOldFormat = payload && typeof payload === 'object' && payload.data && Array.isArray(payload.data.staff);
+      if (!isNewFormat && !isOldFormat) {
         alert('バックアップファイルの内容が正しくありません。');
         return;
       }
       const exportedAt = payload.exportedAt ? new Date(payload.exportedAt).toLocaleString('ja-JP') : '不明';
       if (!confirm(`このバックアップ（作成日時：${exportedAt}）で現在のデータをすべて上書きします。よろしいですか？`)) {
         return;
+      }
+      if (isOldFormat && !isNewFormat) {
+        // 旧形式（処理期共通の名簿）のバックアップ：一度そのまま書き戻し、次回起動時に処理期ごとの名簿へ自動移行させる
+        localStorage.removeItem(KEY_PERIOD_STAFF);
+        localStorage.removeItem(KEY_STAFF_ID_MAP);
+        localStorage.removeItem(KEY_HISTORY_STAFF);
+        save(KEY_STAFF, payload.data.staff);
       }
       Object.entries(BACKUP_KEYS).forEach(([name, key]) => {
         if (payload.data[name] !== undefined && payload.data[name] !== null) {
@@ -1852,10 +1970,10 @@ function initHandoverExport() {
       history.map((r) => [
         r.date,
         WEEKDAY_LABEL[r.weekday],
-        (staffById(r.seniorId) || {}).number || '',
+        (resolveAnyStaff(r.seniorId) || {}).number || '',
         r.seniorName || '',
         r.seniorChangedAt || '',
-        (staffById(r.juniorId) || {}).number || '',
+        (resolveAnyStaff(r.juniorId) || {}).number || '',
         r.juniorName || '',
         r.juniorChangedAt || '',
         r.status === 'ok' ? 'OK' : '要確認',
@@ -1961,40 +2079,28 @@ function renderCheckTable() {
     });
   });
 
-  const standingDepts = currentPeriod().standingExcludedDepts;
-  const targetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, standingDepts));
-  const unassigned = targetStaff.filter((s) => !countMap.get(s.id));
-  const summaryEl = document.getElementById('check-unassigned-summary');
-  if (summaryEl) {
-    const scopeLabel =
-      historyPeriodFilter === 'all'
-        ? '全期間'
-        : historyPeriodFilter === 'unassigned'
-        ? '未分類の履歴'
-        : (periodById(historyPeriodFilter) || currentPeriod()).label;
-    summaryEl.textContent = unassigned.length
-      ? `【${scopeLabel}】未割当の職員（${unassigned.length}名）：${unassigned.map((s) => s.name).join('、')}`
-      : `【${scopeLabel}】対象職員は全員、少なくとも1回は割り当てられています。`;
-  }
-
-  const rows = staff
-    .map((s) => ({ s, count: countMap.get(s.id) || 0, last: lastMap.get(s.id) || '' }))
+  // 担当実績のある職員のみを表示する（未割当の確認は勤務表作成タブで行う）
+  const rows = [...countMap.keys()]
+    .map((id) => ({
+      s: resolveAnyStaff(id) || { id, number: '', name: '（不明）', level: null, dept: '' },
+      count: countMap.get(id),
+      last: lastMap.get(id) || '',
+    }))
     .sort((a, b) => a.count - b.count);
   tbody.innerHTML = rows
     .map(
       ({ s, count, last }) => `
-    <tr class="${count === 0 ? 'row-warning' : ''}">
+    <tr>
       <td>${escapeHtml(s.number)}</td>
       <td>${escapeHtml(s.name)}</td>
-      <td>${LEVEL_LABEL[s.level]}</td>
-      <td>${escapeHtml(s.dept)}</td>
-      <td>${s.active !== false ? '○' : '対象外'}</td>
+      <td>${s.level ? LEVEL_LABEL[s.level] : ''}</td>
+      <td>${escapeHtml(s.dept || '')}</td>
       <td>${count}</td>
-      <td>${last || '（担当履歴なし）'}</td>
+      <td>${last}</td>
       <td><button class="btn-secondary check-detail-btn" data-id="${s.id}">履歴を見る</button></td>
     </tr>
     <tr class="check-detail-row hidden" data-detail-for="${s.id}">
-      <td colspan="8"></td>
+      <td colspan="7"></td>
     </tr>`
     )
     .join('');
@@ -2092,17 +2198,18 @@ function initHistoryXlsxImport() {
   document.getElementById('history-xlsx-confirm').addEventListener('click', () => {
     if (!historyXlsxRows) return;
     const targetPeriod = currentPeriod();
-    const byNumber = new Map(staff.map((s) => [String(s.number), s]));
     let stubsCreated = 0;
     const resolveStaff = (number, name, level) => {
       if (!number) return null;
-      if (byNumber.has(number)) return byNumber.get(number);
+      const id = idForNumber(number);
+      const existing = resolveAnyStaff(id);
+      if (existing) return existing;
       const stub = {
-        id: uid('st'), number, name: name || '（不明）', level, title: '', dept: '', section: '', sideJob: '',
-        citizenExp: false, deptHistory: [], hireDate: null, retireDate: null, active: false,
+        id, number, name: name || '（不明）', level, title: '', dept: '', section: '', sideJob: '',
+        citizenExp: false, dispatched: false, seventyPercent: false, deptHistory: [], hireDate: null, retireDate: null, active: false,
       };
-      staff.push(stub);
-      byNumber.set(number, stub);
+      historyStaffStubs.push(stub);
+      invalidateStaffMapCache();
       stubsCreated++;
       return stub;
     };
@@ -2132,9 +2239,8 @@ function initHistoryXlsxImport() {
       imported++;
     });
     history.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-    save(KEY_STAFF, staff);
+    save(KEY_HISTORY_STAFF, historyStaffStubs);
     save(KEY_HISTORY, history);
-    renderStaffTable();
     renderHistoryTable();
     renderCheckTable();
     historyXlsxRows = null;
