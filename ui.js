@@ -245,10 +245,14 @@ function copyFromPreviousPeriod(target) {
 /* ------------------------------------------------------------
  * 名簿（処理期ごと）
  * ------------------------------------------------------------ */
+/** 選択中の処理期の名簿。未取込の処理期では空配列を返す（保存領域には作らない） */
 function currentPeriodStaffArray() {
-  const id = currentPeriod().id;
-  if (!periodStaff[id]) periodStaff[id] = [];
-  return periodStaff[id];
+  return periodStaff[currentPeriod().id] || [];
+}
+/** 選択中の処理期に名簿が取り込まれているか */
+function hasRosterForCurrentPeriod() {
+  const list = periodStaff[currentPeriod().id];
+  return Array.isArray(list) && list.length > 0;
 }
 let _staffMapCache = null;
 function invalidateStaffMapCache() {
@@ -267,9 +271,15 @@ function allKnownStaffMap() {
 function resolveAnyStaff(id) {
   return allKnownStaffMap().get(id) || null;
 }
-/** 現在の名簿（staff配列）を処理期の保存領域へ書き戻す */
+/** 現在の名簿（staff配列）を処理期の保存領域へ書き戻す。
+ *  空になった場合は保存領域から取り除き、「未取込」の状態に戻す */
 function savePeriodStaff() {
-  periodStaff[currentPeriod().id] = staff;
+  const id = currentPeriod().id;
+  if (staff.length) {
+    periodStaff[id] = staff;
+  } else {
+    delete periodStaff[id];
+  }
   save(KEY_PERIOD_STAFF, periodStaff);
   invalidateStaffMapCache();
 }
@@ -292,7 +302,8 @@ function previousPeriodStaffMap() {
 
 /** 旧形式（処理期共通の名簿）から、処理期ごとの名簿へ一度だけ移行する。
  *  既存の職員IDはそのまま引き継ぐため、確定済み履歴（seniorId/juniorId）は書き換え不要。
- *  移行時点で登録済みの全処理期に同じ名簿を複製する（各処理期の実際の名簿は、以後のExcel再取込で正しくなる）。
+ *  名簿は処理期ごとに取り込む運用のため、移行先は「移行時点で選択中の処理期」のみとする。
+ *  他の処理期は未取込のままとし、名簿管理タブには表示しない（必要になった時点でExcelを取り込む）。
  *  所属が空の職員（勤務実績Excel取込で作られた履歴専用スタブ）は名簿には含めず、履歴専用スタブへ分離する。 */
 function migrateToPerPeriodStaff() {
   if (localStorage.getItem(KEY_PERIOD_STAFF)) return;
@@ -310,16 +321,15 @@ function migrateToPerPeriodStaff() {
   const realStaff = oldStaff.filter((s) => !isStub(s));
   const stubs = oldStaff.filter(isStub);
 
-  const newPeriodStaff = {};
-  periods.forEach((p) => {
-    const citizenSet = new Set((p.citizenExpNumbers || []).map(String));
-    newPeriodStaff[p.id] = realStaff.map((s) => ({
+  const target = currentPeriod();
+  const citizenSet = new Set((target.citizenExpNumbers || []).map(String));
+  periodStaff = {
+    [target.id]: realStaff.map((s) => ({
       ...s,
       deptHistory: Array.isArray(s.deptHistory) ? [...s.deptHistory] : [],
       citizenExp: !!s.citizenExp || citizenSet.has(String(s.number)),
-    }));
-  });
-  periodStaff = newPeriodStaff;
+    })),
+  };
   save(KEY_PERIOD_STAFF, periodStaff);
 
   historyStaffStubs = historyStaffStubs.concat(stubs);
@@ -593,13 +603,24 @@ function attachStaffRowHandlers(tbody) {
 }
 /** 名簿表示を「対象者リスト」（日直の割当対象）と「除外リスト」（常時除外・手動除外）に分けて表示する */
 function renderStaffTable() {
+  // 名簿を取り込んでいない処理期では、名簿の一覧そのものを表示しない
+  const hasRoster = hasRosterForCurrentPeriod();
+  const emptyNoteEl = document.getElementById('staff-empty-period-note');
+  if (emptyNoteEl) emptyNoteEl.classList.toggle('hidden', hasRoster);
+  const rosterBody = document.getElementById('staff-roster-body');
+  if (rosterBody) rosterBody.classList.toggle('hidden', !hasRoster);
+  const clearBtn = document.getElementById('staff-clear-btn');
+  if (clearBtn) clearBtn.classList.toggle('hidden', !hasRoster);
+  const countEl = document.getElementById('staff-count');
+  if (!hasRoster) {
+    if (countEl) countEl.textContent = '';
+    return;
+  }
+
   const standingDepts = currentPeriod().standingExcludedDepts;
   const visible = staff.filter((s) => matchesStaffSearch(s, staffSearchQuery)).sort(compareByDeptCode);
   const excludedList = visible.filter((s) => s.active === false || isStandingExcluded(s, standingDepts));
   const targetList = visible.filter((s) => !(s.active === false || isStandingExcluded(s, standingDepts)));
-
-  const emptyNoteEl = document.getElementById('staff-empty-period-note');
-  if (emptyNoteEl) emptyNoteEl.classList.toggle('hidden', staff.length > 0);
 
   const targetTbody = document.getElementById('staff-tbody-target');
   targetTbody.innerHTML = targetList.map((s) => staffRowHtml(s, { showReason: false })).join('');
@@ -707,6 +728,19 @@ function initStaffForm() {
     );
     downloadCsv('職員名簿.csv', rows);
   });
+
+  const clearBtn = document.getElementById('staff-clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      const p = currentPeriod();
+      if (!confirm(`「${p.label}」の名簿（${staff.length}名）をすべて削除し、未取込の状態に戻します。よろしいですか？`)) return;
+      staff = [];
+      savePeriodStaff();
+      renderStaffTable();
+      renderStandingRuleList();
+      showToast(`「${p.label}」の名簿を削除しました`);
+    });
+  }
 }
 
 /* ------------------------------------------------------------
