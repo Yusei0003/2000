@@ -1934,8 +1934,8 @@ function initGenerateRun() {
   });
 
   document.getElementById('gen-pdf').addEventListener('click', () => {
-    const label = currentPeriod().label;
-    exportRowsToPdf(label, draftResults, `日直勤務表_${label}.pdf`);
+    const period = currentPeriod();
+    exportPeriodPdfByQuarter(period, draftResults, `日直勤務表_${period.label}.pdf`);
   });
 }
 /** 処理期の期間を勤務表作成タブの入力欄へ反映する */
@@ -2291,21 +2291,20 @@ function initHandoverExport() {
 /* ------------------------------------------------------------
  * PDF出力（html2canvasで画像化し、jsPDFに埋め込む）
  * ------------------------------------------------------------ */
-function exportRowsToPdf(title, rows, filename) {
-  if (!rows.length) {
-    alert('出力する内容がありません');
-    return;
-  }
+/** PDF用の印刷シート要素を1枚作る。見出し欄は「氏名」で統一する（係長級・主事級の別は表示しない）。 */
+function buildPrintSheetEl(headingHtml, rows) {
   const sheet = document.createElement('div');
   sheet.className = 'print-sheet';
   sheet.innerHTML = `
-    <h2>${escapeHtml(title)}　日直勤務表</h2>
+    ${headingHtml}
     <table>
-      <thead><tr><th>日付</th><th>曜日</th><th>係長級</th><th>変更日時</th><th>主事級</th><th>変更日時</th></tr></thead>
+      <thead><tr><th>日付</th><th>曜日</th><th>氏名</th><th>変更日時</th><th>氏名</th><th>変更日時</th></tr></thead>
       <tbody>
-        ${rows
-          .map(
-            (r) => `<tr>
+        ${
+          rows.length
+            ? rows
+                .map(
+                  (r) => `<tr>
               <td>${r.date}</td>
               <td>${WEEKDAY_LABEL[r.weekday]}</td>
               <td>${escapeHtml(r.seniorName || '')}</td>
@@ -2313,23 +2312,26 @@ function exportRowsToPdf(title, rows, filename) {
               <td>${escapeHtml(r.juniorName || '')}</td>
               <td>${escapeHtml(r.juniorChangedAt || '')}</td>
             </tr>`
-          )
-          .join('')}
+                )
+                .join('')
+            : '<tr><td colspan="6" style="text-align:center;color:#666">該当日はありません</td></tr>'
+        }
       </tbody>
     </table>`;
+  return sheet;
+}
+/** 1枚の印刷シートを画像化し、PDFのページとして追加する（1ページに収まらない場合は続けてページを追加する）。 */
+function addSheetPagesToPdf(pdf, sheet, margin, isVeryFirstPage) {
   document.body.appendChild(sheet);
-
-  window.html2canvas(sheet, { scale: 2 }).then((canvas) => {
+  return window.html2canvas(sheet, { scale: 2 }).then((canvas) => {
     document.body.removeChild(sheet);
     const imgData = canvas.toDataURL('image/png');
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
-    const margin = 24;
     const usableWidth = pageWidth - margin * 2;
     const imgHeight = (canvas.height * usableWidth) / canvas.width;
 
+    if (!isVeryFirstPage) pdf.addPage();
     let heightLeft = imgHeight;
     let position = margin;
     pdf.addImage(imgData, 'PNG', margin, position, usableWidth, imgHeight);
@@ -2340,11 +2342,46 @@ function exportRowsToPdf(title, rows, filename) {
       pdf.addImage(imgData, 'PNG', margin, position, usableWidth, imgHeight);
       heightLeft -= pageHeight - margin * 2;
     }
-    pdf.save(filename);
   }).catch((err) => {
     if (sheet.parentNode) document.body.removeChild(sheet);
-    alert('PDFの生成に失敗しました：' + err.message);
+    throw err;
   });
+}
+function exportRowsToPdf(title, rows, filename) {
+  if (!rows.length) {
+    alert('出力する内容がありません');
+    return;
+  }
+  const sheet = buildPrintSheetEl(`<h2>${escapeHtml(title)}　日直勤務表</h2>`, rows);
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  addSheetPagesToPdf(pdf, sheet, 24, true)
+    .then(() => pdf.save(filename))
+    .catch((err) => alert('PDFの生成に失敗しました：' + err.message));
+}
+/** 処理期（前期／後期）の勤務表を、期間ごとに指定ページへ分けてPDF出力する。
+ *  前期：1ページ目=処理期開始から3ヶ月（4〜6月）／2ページ目=残り3ヶ月（7〜9月）。
+ *  後期：1ページ目=処理期開始から3ヶ月（10〜12月）／2ページ目=残り3ヶ月（1〜3月）。 */
+function exportPeriodPdfByQuarter(period, rows, filename) {
+  if (!rows.length) {
+    alert('出力する内容がありません');
+    return;
+  }
+  const midISO = toISO(addMonths(parseISO(period.startDate), 3));
+  const quarters = [
+    { label: period.half === 'H1' ? '4月〜6月' : '10月〜12月', rows: rows.filter((r) => r.date < midISO) },
+    { label: period.half === 'H1' ? '7月〜9月' : '1月〜3月', rows: rows.filter((r) => r.date >= midISO) },
+  ];
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  let chain = Promise.resolve();
+  quarters.forEach((q, i) => {
+    const sheet = buildPrintSheetEl(`<h2>${escapeHtml(period.label)}　日直勤務表（${q.label}）</h2>`, q.rows);
+    chain = chain.then(() => addSheetPagesToPdf(pdf, sheet, 24, i === 0));
+  });
+  chain
+    .then(() => pdf.save(filename))
+    .catch((err) => alert('PDFの生成に失敗しました：' + err.message));
 }
 function initHistoryPdf() {
   document.getElementById('history-pdf-btn').addEventListener('click', () => {
