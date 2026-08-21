@@ -122,12 +122,12 @@ function isJapaneseHoliday(date) {
 }
 
 /* ------------------------------------------------------------
- * 年末年始の閉庁日判定（12/28〜1/3。曜日を問わず閉庁）
+ * 年末年始の閉庁日判定（12/29〜1/3。曜日を問わず閉庁）
  * ------------------------------------------------------------ */
 function isYearEndClosure(date) {
   const m = date.getMonth() + 1;
   const d = date.getDate();
-  return (m === 12 && d >= 28) || (m === 1 && d <= 3);
+  return (m === 12 && d >= 29) || (m === 1 && d <= 3);
 }
 
 /* ------------------------------------------------------------
@@ -425,11 +425,12 @@ function generateAssignments({
       });
     }
 
+    // gender に null を渡すと性別を問わない（人数不足時の最終手段でのみ使用）
     const eligibleBase = (level, gender) =>
       activeStaff.filter(
         (s) =>
           s.level === level &&
-          s.gender === gender &&
+          (gender == null || s.gender === gender) &&
           !isOnLeave(s, date, leaves) &&
           ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
           !bannedBySpecial.has(s.id) &&
@@ -513,24 +514,52 @@ function generateAssignments({
         genderUsed = 'M';
       }
     }
+    // 性別・係長級を問わず、どちらの性別でもペアが組めなかった場合の最終手段。
+    // 「人数不足を可能な限り防ぐ」ため、通常のルール（枯渇ベースの性別一致・
+    // 少なくとも1名は係長級等）を破ってでも、その日に割当可能な対象者を
+    // 可能な限り（2名、無理なら1名）機械的に割り当てる。
+    let forcedFallbackUsed = false;
+    let forcedNoSenior = false;
+    let forcedMixedGender = false;
+    if (!result.pair) {
+      const anySeniorPool = sortCandidates(eligibleBase('senior', null), countMap, lastDateMap);
+      const anyJuniorPool = sortCandidates(eligibleBase('junior', null), countMap, lastDateMap);
+      const anyCombinedPool = sortByCountAndRecency(interleave(anySeniorPool, anyJuniorPool), countMap, lastDateMap);
+      if (anySeniorPool.length) {
+        const anchor = anySeniorPool[0];
+        const partner = anyCombinedPool.find((p) => p.id !== anchor.id) || null;
+        result = { ...result, pair: { senior: anchor, junior: partner } };
+        forcedFallbackUsed = true;
+        forcedMixedGender = !!(partner && anchor.gender && partner.gender && anchor.gender !== partner.gender);
+      } else if (anyCombinedPool.length >= 2) {
+        const anchor = anyCombinedPool[0];
+        const partner = anyCombinedPool.find((p) => p.id !== anchor.id);
+        result = { ...result, pair: { senior: anchor, junior: partner } }; // 係長級が1人もいない（最終手段）
+        forcedFallbackUsed = true;
+        forcedNoSenior = true;
+        forcedMixedGender = !!(anchor.gender && partner.gender && anchor.gender !== partner.gender);
+      } else if (anyCombinedPool.length === 1) {
+        const solo = anyCombinedPool[0];
+        result = { ...result, pair: solo.level === 'senior' ? { senior: solo, junior: null } : { senior: null, junior: solo } };
+        forcedFallbackUsed = true;
+      }
+    }
+
     const { pair, relaxedStage, repeat } = result;
 
     const chosenSenior = pair ? pair.senior : null;
     const chosenJunior = pair ? pair.junior : null;
+    const assignedCount = (chosenSenior ? 1 : 0) + (chosenJunior ? 1 : 0);
 
     const reasons = [];
-    if (!pair) {
-      if (!result.seniorPool.length) {
-        reasons.push('女性の係長級候補が枯渇しています');
-      } else if (!result.combinedPool.some((p) => p.id !== result.seniorPool[0].id)) {
-        reasons.push('女性の相方候補がいません');
-      }
-      const m = resultM || tryGender('M');
-      if (!m.seniorPool.length) {
-        reasons.push('男性の係長級候補もいません');
-      } else if (!m.combinedPool.some((p) => p.id !== m.seniorPool[0].id)) {
-        reasons.push('男性の相方候補もいません');
-      }
+    if (assignedCount === 0) {
+      reasons.push('対象者がいません（休暇・除外等により、この日に割当可能な職員が1人もいません）');
+    } else if (assignedCount === 1) {
+      reasons.push('人数不足のため1名のみの割当です（相方となる対象者がいません）');
+    } else if (forcedFallbackUsed) {
+      if (forcedNoSenior) reasons.push('係長級が含まれていません（人数不足のため）');
+      if (forcedMixedGender) reasons.push('性別が異なる組合せです（人数不足のため）');
+      if (!forcedNoSenior && !forcedMixedGender) reasons.push('人数不足のため、通常のルールを緩和して割り当てました');
     } else {
       if (repeat) reasons.push('同一処理期内で2回目の割当です');
       if (relaxedStage >= 4) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
@@ -538,6 +567,8 @@ function generateAssignments({
       if (relaxedStage >= 2) reasons.push('課長補佐・副主幹の組合せになっています');
       if (relaxedStage >= 1) reasons.push('過去のペアと重複しています');
     }
+
+    const status = assignedCount < 2 ? 'error' : reasons.length ? 'warning' : 'ok';
 
     const record = {
       date: dd.date,
@@ -547,7 +578,7 @@ function generateAssignments({
       juniorId: chosenJunior ? chosenJunior.id : null,
       seniorName: chosenSenior ? chosenSenior.name : '',
       juniorName: chosenJunior ? chosenJunior.name : '',
-      status: chosenSenior && chosenJunior && relaxedStage === 0 && !repeat ? 'ok' : 'warning',
+      status,
       reason: reasons.join(' / '),
       specialPeriodKey: special ? special.key : null,
       manuallyEdited: false,

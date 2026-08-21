@@ -50,6 +50,13 @@ function escapeHtml(s) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
 }
+/** status: 'ok' | 'warning' | 'error'（'error' は人数不足で2名の枠を埋められなかったことを示す） */
+function statusLabel(status) {
+  return status === 'ok' ? 'OK' : status === 'error' ? '人数不足' : '要確認';
+}
+function statusRowClass(status) {
+  return status === 'error' ? 'row-error' : status === 'warning' ? 'row-warning' : '';
+}
 function showToast(msg) {
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -1667,7 +1674,7 @@ function renderGenResultTable() {
   tbody.innerHTML = draftResults
     .map(
       (r, i) => `
-    <tr class="${r.status === 'warning' ? 'row-warning' : ''}">
+    <tr class="${statusRowClass(r.status)}">
       <td>${r.date}</td>
       <td>${WEEKDAY_LABEL[r.weekday]}</td>
       <td>${escapeHtml(r.holidayName || '')}</td>
@@ -1679,7 +1686,7 @@ function renderGenResultTable() {
         <span class="assign-name-chip" draggable="true" data-idx="${i}" data-level="junior" title="ドラッグして他の日・欄の職員と入れ替えられます">${r.juniorName ? escapeHtml(r.juniorName) : '未定'}</span>
         ${renderStaffSelect(i, 'junior', r.juniorId)}
       </td>
-      <td>${r.status === 'ok' ? 'OK' : '要確認：' + escapeHtml(r.reason)}</td>
+      <td>${r.status === 'ok' ? 'OK' : (r.status === 'error' ? 'エラー：' : '要確認：') + escapeHtml(r.reason)}</td>
     </tr>`
     )
     .join('');
@@ -1733,8 +1740,9 @@ function renderGenResultTable() {
   });
 
   const warnCount = draftResults.filter((r) => r.status === 'warning').length;
+  const errorCount = draftResults.filter((r) => r.status === 'error').length;
   document.getElementById('gen-warning-summary').innerHTML = draftResults.length
-    ? `<p class="hint">合計 ${draftResults.length} 日 / 要確認 ${warnCount} 日</p>`
+    ? `<p class="hint">合計 ${draftResults.length} 日 / 要確認 ${warnCount} 日${errorCount ? ` / <strong style="color:var(--danger)">人数不足エラー ${errorCount} 日</strong>` : ''}</p>`
     : '';
 
   const unassignedEl = document.getElementById('gen-unassigned-summary');
@@ -1806,8 +1814,12 @@ function renderStaffSelect(idx, level, currentId) {
  *  違反時は「要確認」表示に切り替えるだけにとどめる。 */
 function validateManualPair(seniorRec, juniorRec) {
   const reasons = [];
+  if (!seniorRec && !juniorRec) {
+    reasons.push('対象者がいません');
+    return reasons;
+  }
   if (!seniorRec || !juniorRec) {
-    reasons.push('片方が未定です');
+    reasons.push('人数不足のため1名のみの割当です');
     return reasons;
   }
   if (seniorRec.level !== 'senior' && juniorRec.level !== 'senior') {
@@ -1850,7 +1862,7 @@ function revalidateDraftResult(idx) {
     violations.push('同一処理期内で2回目の割当です');
   }
 
-  r.status = violations.length ? 'warning' : 'ok';
+  r.status = !s || !j ? 'error' : violations.length ? 'warning' : 'ok';
   r.reason = violations.length ? violations.join(' / ') : '（手動で修正済み）';
   r.manuallyEdited = true;
 }
@@ -1916,7 +1928,7 @@ function initGenerateRun() {
 
   document.getElementById('gen-export').addEventListener('click', () => {
     const rows = [['日付', '曜日', '祝日等', '係長級', '主事級', '状態']].concat(
-      draftResults.map((r) => [r.date, WEEKDAY_LABEL[r.weekday], r.holidayName || '', r.seniorName, r.juniorName, r.status === 'ok' ? 'OK' : '要確認'])
+      draftResults.map((r) => [r.date, WEEKDAY_LABEL[r.weekday], r.holidayName || '', r.seniorName, r.juniorName, statusLabel(r.status)])
     );
     downloadCsv('日直勤務表.csv', rows);
   });
@@ -1969,7 +1981,7 @@ function renderHistoryTable() {
   tbody.innerHTML = rows
     .map(
       (r) => `
-    <tr class="${r.status === 'warning' ? 'row-warning' : ''}">
+    <tr class="${statusRowClass(r.status)}">
       <td>${escapeHtml(r.periodLabel || '')}</td>
       <td>${r.date}</td>
       <td>${WEEKDAY_LABEL[r.weekday]}</td>
@@ -1977,7 +1989,7 @@ function renderHistoryTable() {
       <td>${escapeHtml(r.seniorChangedAt || '')}</td>
       <td>${escapeHtml(r.juniorName)}<div class="row-actions"><button class="btn-secondary change-btn" data-date="${r.date}" data-level="junior">交代を反映</button></div></td>
       <td>${escapeHtml(r.juniorChangedAt || '')}</td>
-      <td>${r.status === 'ok' ? 'OK' : '要確認'}</td>
+      <td>${statusLabel(r.status)}</td>
       <td><button class="btn-danger" data-del="${r.date}" data-date="${r.date}">削除</button></td>
     </tr>`
     )
@@ -2019,7 +2031,7 @@ document.addEventListener('click', (e) => {
         r.seniorChangedAt || '',
         r.juniorName,
         r.juniorChangedAt || '',
-        r.status === 'ok' ? 'OK' : '要確認',
+        statusLabel(r.status),
       ])
     );
     downloadCsv('日直勤務表_履歴.csv', rows);
@@ -2263,7 +2275,7 @@ function initHandoverExport() {
         (resolveAnyStaff(r.juniorId) || {}).number || '',
         r.juniorName || '',
         r.juniorChangedAt || '',
-        r.status === 'ok' ? 'OK' : '要確認',
+        statusLabel(r.status),
         r.periodLabel || '',
       ])
     );
