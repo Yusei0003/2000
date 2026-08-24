@@ -402,6 +402,37 @@ function generateAssignments({
   const results = [];
   const sorted = [...dutyDates].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
+  /* --------------------------------------------------------
+   * 性別ゾーン（女性ゾーン→男性ゾーンの一方向ラッチ）
+   * --------------------------------------------------------
+   * 「男性の期間に女性が混ざると交代しづらい」ため、日ごとに毎回
+   * 女性から探すのではなく、いったん男性側に切り替わったら、その
+   * 処理期内は女性ゾーンへ戻さない。境界は「その日に割り当てられる
+   * 未割当の女性が1人もいなくなった日」とする。
+   * femaleUsedThisPeriod は安全弁：女性を一度も使っていない状態で
+   * （行事除外等により）たまたま1日だけ女性が0人になっても、それだけ
+   * では男性ゾーンに固定しない（女性ゾーンの開始前に誤って確定させない）。
+   * ------------------------------------------------------ */
+  let genderZone = 'F';
+  let femaleUsedThisPeriod = false;
+  if (periodId) {
+    const staffGenderById = new Map(staffList.map((s) => [s.id, s.gender]));
+    history
+      .filter((h) => h.periodId === periodId)
+      .slice()
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+      .forEach((h) => {
+        const genders = [h.seniorId, h.juniorId]
+          .filter(Boolean)
+          .map((id) => staffGenderById.get(id))
+          .filter(Boolean);
+        const hasFemale = genders.includes('F');
+        const maleOnly = genders.length > 0 && genders.every((g) => g === 'M');
+        if (hasFemale) femaleUsedThisPeriod = true;
+        if (maleOnly && femaleUsedThisPeriod) genderZone = 'M';
+      });
+  }
+
   sorted.forEach((dd) => {
     const date = parseISO(dd.date);
     const month = date.getMonth() + 1;
@@ -488,53 +519,77 @@ function generateAssignments({
       return { seniorPool, juniorPool, combinedPool, pair, relaxedStage, repeat };
     };
 
-    // 枯渇ベース：まず女性のみで探し、女性の候補が枯渇している場合に男性のみで探す。ペアは常に同性。
-    // 探索は「今期未割当」を先に全性別ぶん試し切ってから、「今期2回目」に進む。
-    // （女性が少ない職場で、男性がまだ1回も割り当てられていないのに女性を2回目に回してしまう
-    //   ことがないようにするため。性別ごとの日数の枠は設けず、その時の人数に応じて自然に決まる。）
-    let result = tryGender('F', false);
-    for (const [gender, allowRepeat] of [['M', false], ['F', true], ['M', true]]) {
-      if (result.pair) break;
-      const next = tryGender(gender, allowRepeat);
-      if (next.pair) result = next;
-    }
-    // 性別・係長級を問わず、どちらの性別でもペアが組めなかった場合の最終手段。
-    // 「人数不足を可能な限り防ぐ」ため、通常のルール（枯渇ベースの性別一致・
-    // 少なくとも1名は係長級等）を破ってでも、その日に割当可能な対象者を
-    // 可能な限り（2名、無理なら1名）機械的に割り当てる。
-    let forcedFallbackUsed = false;
-    let forcedNoSenior = false;
-    let forcedMixedGender = false;
-    let forcedIgnoredGap = false;
-    // まずは最低間隔日数（120日）を守ったまま探し、それでも誰も残らない場合に限り、
-    // 最後の手段として120日ルールも外して探す（誰も当番に立てない日を作らないため）。
-    for (const ignoreGap of [false, true]) {
-      if (result.pair) break;
-      const anySeniorPool = sortCandidates(eligibleBase('senior', null, ignoreGap), countMap, lastDateMap);
-      const anyJuniorPool = sortCandidates(eligibleBase('junior', null, ignoreGap), countMap, lastDateMap);
-      const anyCombinedPool = sortByCountAndRecency(interleave(anySeniorPool, anyJuniorPool), countMap, lastDateMap);
-      if (anySeniorPool.length) {
-        const anchor = anySeniorPool[0];
-        const partner = anyCombinedPool.find((p) => p.id !== anchor.id) || null;
-        result = { ...result, pair: { senior: anchor, junior: partner } };
-        forcedFallbackUsed = true;
-        forcedMixedGender = !!(partner && anchor.gender && partner.gender && anchor.gender !== partner.gender);
-      } else if (anyCombinedPool.length >= 2) {
-        const anchor = anyCombinedPool[0];
-        const partner = anyCombinedPool.find((p) => p.id !== anchor.id);
-        result = { ...result, pair: { senior: anchor, junior: partner } }; // 係長級が1人もいない（最終手段）
-        forcedFallbackUsed = true;
-        forcedNoSenior = true;
-        forcedMixedGender = !!(anchor.gender && partner.gender && anchor.gender !== partner.gender);
-      } else if (anyCombinedPool.length === 1) {
-        const solo = anyCombinedPool[0];
-        result = { ...result, pair: solo.level === 'senior' ? { senior: solo, junior: null } : { senior: null, junior: solo } };
-        forcedFallbackUsed = true;
+    /** 指定した性別に固定して、可能な限りその性別だけでその日を埋める。
+     *  includeFresh=true なら「今期未割当」から試す。見つからなければ「今期2回目」を試し、
+     *  それでも見つからなければ、係長級の有無・最低間隔日数（120日）も緩和した最終手段で
+     *  1名（無理なら相方なしの単独）まで探す（他方の性別には一切広げない）。 */
+    const searchGenderFull = (gender, includeFresh) => {
+      let r = includeFresh ? tryGender(gender, false) : { pair: null, relaxedStage: 0, repeat: false };
+      if (!r.pair) {
+        const r2 = tryGender(gender, true);
+        if (r2.pair) r = r2;
       }
-      if (result.pair && ignoreGap) forcedIgnoredGap = true;
+      let { pair, relaxedStage, repeat } = r;
+      let forcedFallbackUsed = false;
+      let forcedNoSenior = false;
+      let forcedIgnoredGap = false;
+      for (const ignoreGap of [false, true]) {
+        if (pair) break;
+        const zSeniorPool = sortCandidates(eligibleBase('senior', gender, ignoreGap), countMap, lastDateMap);
+        const zJuniorPool = sortCandidates(eligibleBase('junior', gender, ignoreGap), countMap, lastDateMap);
+        const zCombinedPool = sortByCountAndRecency(interleave(zSeniorPool, zJuniorPool), countMap, lastDateMap);
+        if (zSeniorPool.length) {
+          const anchor = zSeniorPool[0];
+          const partner = zCombinedPool.find((p) => p.id !== anchor.id) || null;
+          pair = { senior: anchor, junior: partner };
+          forcedFallbackUsed = true;
+        } else if (zCombinedPool.length >= 2) {
+          const anchor = zCombinedPool[0];
+          const partner = zCombinedPool.find((p) => p.id !== anchor.id);
+          pair = { senior: anchor, junior: partner }; // 係長級が1人もいない（最終手段）
+          forcedFallbackUsed = true;
+          forcedNoSenior = true;
+        } else if (zCombinedPool.length === 1) {
+          const solo = zCombinedPool[0];
+          pair = solo.level === 'senior' ? { senior: solo, junior: null } : { senior: null, junior: solo };
+          forcedFallbackUsed = true;
+        }
+        if (pair && ignoreGap) forcedIgnoredGap = true;
+      }
+      return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap };
+    };
+
+    // 性別ゾーン方式：女性ゾーンでは「女性・今期未割当」のみをまず試す（＝境界は「その日に
+    // 割り当てられる未割当の女性が1人もいない」こと。女性の2回目をここで試すと、女性が
+    // 少数でも1人1回の“2回目”だけで際限なく粘ってしまい、男性が一度も使われなくなるため）。
+    // それが失敗した場合に限り、男性を（今期未割当→今期2回目→最終手段まで）フルに探す。
+    // 男性が1名も見つけられなかった場合（男性が0名の職場等）は、ゾーンを切り替えても
+    // 意味がないため、女性側の2回目・最終手段に留まる（一度も男性ゾーンに入らない）。
+    // 一度男性ゾーンに入ったら、この処理期の残りは女性を一切探索しない（femaleUsedThisPeriod
+    // ガード付きで genderZone をラッチする）。ペアは常に同性。
+    let zoneToday = genderZone;
+    let outcome;
+    if (zoneToday === 'F') {
+      const freshF = tryGender('F', false);
+      if (freshF.pair) {
+        outcome = { ...freshF, forcedFallbackUsed: false, forcedNoSenior: false, forcedIgnoredGap: false };
+      } else {
+        const maleFull = searchGenderFull('M', true);
+        if (maleFull.pair) {
+          zoneToday = 'M';
+          outcome = maleFull;
+        } else {
+          outcome = searchGenderFull('F', false); // 女性の未割当は失敗済みなので2回目から
+        }
+      }
+    } else {
+      outcome = searchGenderFull('M', true);
     }
 
-    const { pair, relaxedStage, repeat } = result;
+    const { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap } = outcome;
+    const usedGenderToday = pair ? (pair.senior ? pair.senior.gender : pair.junior.gender) : null;
+    if (usedGenderToday === 'F') femaleUsedThisPeriod = true;
+    if (zoneToday === 'M' && femaleUsedThisPeriod) genderZone = 'M';
 
     const chosenSenior = pair ? pair.senior : null;
     const chosenJunior = pair ? pair.junior : null;
@@ -547,9 +602,8 @@ function generateAssignments({
       reasons.push('人数不足のため1名のみの割当です（相方となる対象者がいません）');
     } else if (forcedFallbackUsed) {
       if (forcedNoSenior) reasons.push('係長級が含まれていません（人数不足のため）');
-      if (forcedMixedGender) reasons.push('性別が異なる組合せです（人数不足のため）');
       if (forcedIgnoredGap) reasons.push(`前回勤務日から${minGapDays}日未満の職員を含みます（人数不足のため）`);
-      if (!forcedNoSenior && !forcedMixedGender && !forcedIgnoredGap) {
+      if (!forcedNoSenior && !forcedIgnoredGap) {
         reasons.push('人数不足のため、通常のルールを緩和して割り当てました');
       }
     } else {
