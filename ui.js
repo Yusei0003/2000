@@ -2041,9 +2041,50 @@ document.addEventListener('click', (e) => {
 /* ------------------------------------------------------------
  * 変更届の反映（確定済み履歴の編集）
  * ------------------------------------------------------------ */
-/** 変更申請のスクリーンショットをOCRで読み取り、交代後の氏名・申請日時をプレフィルする。
- *  読み取り結果は下書きとして入力欄にセットするだけで、反映には引き続き「反映する」の操作が必要。 */
-async function runChangeOcr(file, targetDate, candidates) {
+/** 変更届のテキスト（OCR結果、またはグループウェア等からの直接貼り付け）から、交代後の氏名・
+ *  申請日時をプレフィルする。結果は下書きとして入力欄にセットするだけで、反映には引き続き
+ *  「反映する」の操作が必要。戻り値は画面表示用のメッセージ配列。 */
+function applyChangeDraftFromText(text, targetDate, candidates, currentName) {
+  const nameRaw = extractLabelValue(text, '交代相手氏名');
+  const applicantRaw = extractLabelValue(text, '申請者');
+  const appliedRaw = extractLabelValue(text, '申請日');
+  const changedDateRaw = extractLabelValue(text, '変更する日付');
+
+  const messages = [];
+  const matched = nameRaw ? bestNameMatch(nameRaw, candidates) : null;
+  if (matched) {
+    document.getElementById('change-new-staff').value = matched.id;
+    messages.push(`交代後の氏名：${matched.name} を選択しました（読み取り結果「${nameRaw}」）`);
+  } else if (nameRaw) {
+    messages.push(`交代相手氏名「${nameRaw}」を読み取りましたが、名簿の職員と一致しませんでした。手動で選択してください。`);
+  } else {
+    messages.push('交代相手氏名を読み取れませんでした。手動で選択してください。');
+  }
+
+  const appliedAt = parseOcrDateTime(appliedRaw);
+  if (appliedAt) {
+    document.getElementById('change-applied-at').value = appliedAt;
+    messages.push(`申請日時：${appliedAt.replace('T', ' ')} を入力しました`);
+  } else {
+    messages.push('申請日時を読み取れませんでした。手動で入力してください。');
+  }
+
+  const changedDate = parseOcrDate(changedDateRaw);
+  if (changedDate && changedDate !== targetDate) {
+    messages.push(`⚠ 読み取った変更対象日（${changedDate}）が、この行の日付（${targetDate}）と一致しません。別の変更届でないかご確認ください。`);
+  }
+
+  if (applicantRaw && currentName) {
+    const normalize = (s) => String(s || '').replace(/[\s　]+/g, '');
+    if (normalize(applicantRaw) !== normalize(currentName)) {
+      messages.push(`⚠ 申請者「${applicantRaw}」が、現在の担当者「${currentName}」と一致しません。別の変更届でないかご確認ください。`);
+    }
+  }
+
+  return messages;
+}
+/** 変更届のスクリーンショットをOCRで読み取り、applyChangeDraftFromText で下書きに反映する。 */
+async function runChangeOcr(file, targetDate, candidates, currentName) {
   const statusEl = document.getElementById('change-ocr-status');
   if (typeof Tesseract === 'undefined') {
     if (statusEl) statusEl.textContent = 'OCR機能を読み込めませんでした。手入力をご利用ください。';
@@ -2059,42 +2100,23 @@ async function runChangeOcr(file, targetDate, candidates) {
       gzip: true,
     });
     const { data } = await worker.recognize(file);
-    const text = data.text;
-
-    const nameRaw = extractLabelValue(text, '交代相手氏名');
-    const appliedRaw = extractLabelValue(text, '申請日');
-    const changedDateRaw = extractLabelValue(text, '変更する日付');
-
-    const messages = [];
-    const matched = nameRaw ? bestNameMatch(nameRaw, candidates) : null;
-    if (matched) {
-      document.getElementById('change-new-staff').value = matched.id;
-      messages.push(`交代後の氏名：${matched.name} を選択しました（読み取り結果「${nameRaw}」）`);
-    } else if (nameRaw) {
-      messages.push(`交代相手氏名「${nameRaw}」を読み取りましたが、名簿の職員と一致しませんでした。手動で選択してください。`);
-    } else {
-      messages.push('交代相手氏名を読み取れませんでした。手動で選択してください。');
-    }
-
-    const appliedAt = parseOcrDateTime(appliedRaw);
-    if (appliedAt) {
-      document.getElementById('change-applied-at').value = appliedAt;
-      messages.push(`申請日時：${appliedAt.replace('T', ' ')} を入力しました`);
-    } else {
-      messages.push('申請日時を読み取れませんでした。手動で入力してください。');
-    }
-
-    const changedDate = parseOcrDate(changedDateRaw);
-    if (changedDate && changedDate !== targetDate) {
-      messages.push(`⚠ 読み取った変更対象日（${changedDate}）が、この行の日付（${targetDate}）と一致しません。別の変更届の画像でないかご確認ください。`);
-    }
-
+    const messages = applyChangeDraftFromText(data.text, targetDate, candidates, currentName);
     if (statusEl) statusEl.innerHTML = messages.map((m) => escapeHtml(m)).join('<br>') + '<br>内容を確認のうえ「反映する」を押してください。';
   } catch (err) {
     if (statusEl) statusEl.textContent = '読み取りに失敗しました：' + (err && err.message ? err.message : String(err)) + '（手入力をご利用ください）';
   } finally {
     if (worker) await worker.terminate();
   }
+}
+/** 変更届のテキスト（グループウェア等の申請内容画面をコピー＆ペーストしたもの）を
+ *  applyChangeDraftFromText で下書きに反映する。file:// でも画像OCRと異なり制約なく使える。 */
+function runChangeTextPaste(text, targetDate, candidates, currentName, statusEl) {
+  if (!text || !text.trim()) {
+    if (statusEl) statusEl.textContent = '貼り付けたテキストが空です。';
+    return;
+  }
+  const messages = applyChangeDraftFromText(text, targetDate, candidates, currentName);
+  if (statusEl) statusEl.innerHTML = messages.map((m) => escapeHtml(m)).join('<br>') + '<br>内容を確認のうえ「反映する」を押してください。';
 }
 function openChangeModal(date, level) {
   const record = history.find((r) => r.date === date);
@@ -2120,6 +2142,13 @@ function openChangeModal(date, level) {
       <div class="modal-box">
         <h3>交代を反映（${escapeHtml(date)}・${LEVEL_LABEL[level]}）</h3>
         <p class="hint">現在：${escapeHtml(currentName || '未定')}</p>
+        <label>変更届のテキストを貼り付ける（任意）
+          <textarea id="change-text-input" rows="5" placeholder="グループウェア等の申請内容画面をコピーしてここに貼り付けてください"></textarea>
+        </label>
+        <div class="row-actions" style="margin-bottom:8px">
+          <button id="change-text-parse-btn" class="btn-secondary">貼り付けたテキストから読み取る</button>
+        </div>
+        <p class="hint" id="change-text-status"></p>
         ${ocrSectionHtml}
         <div class="grid-form">
           <label>交代後の氏名
@@ -2144,9 +2173,14 @@ function openChangeModal(date, level) {
   if (ocrInput) {
     ocrInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
-      if (file) runChangeOcr(file, date, candidates);
+      if (file) runChangeOcr(file, date, candidates, currentName);
     });
   }
+  const textInput = document.getElementById('change-text-input');
+  const textStatus = document.getElementById('change-text-status');
+  const runFromPastedText = () => runChangeTextPaste(textInput.value, date, candidates, currentName, textStatus);
+  document.getElementById('change-text-parse-btn').addEventListener('click', runFromPastedText);
+  textInput.addEventListener('paste', () => { setTimeout(runFromPastedText, 0); });
   document.getElementById('change-confirm').addEventListener('click', () => {
     const newId = document.getElementById('change-new-staff').value;
     const appliedAtRaw = document.getElementById('change-applied-at').value;
