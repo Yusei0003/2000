@@ -85,6 +85,8 @@
           <span id="staff-count" class="muted"></span>
           <button id="staff-import-btn" class="btn-secondary">CSV取込</button>
           <button id="staff-export-btn" class="btn-secondary">CSV書出</button>
+          <button id="staff-import-excluded-export-btn" class="btn-secondary">Excel取込で除外された人をCSV書出</button>
+          <button id="staff-excluded-list-export-btn" class="btn-secondary">除外リストの人をCSV書出</button>
           <button id="staff-clear-btn" class="btn-danger hidden">この処理期の名簿を削除</button>
         </div>
       </div>
@@ -108,7 +110,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>採用日</th><th></th></tr>
+              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>身分</th><th>年齢</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>採用日</th><th>退職予定日</th><th></th></tr>
             </thead>
             <tbody id="staff-tbody-target"></tbody>
           </table>
@@ -119,7 +121,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>除外理由</th><th>採用日</th><th></th></tr>
+              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>身分</th><th>年齢</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>除外理由</th><th>採用日</th><th>退職予定日</th><th></th></tr>
             </thead>
             <tbody id="staff-tbody-excluded"></tbody>
           </table>
@@ -144,6 +146,7 @@
         <label>係名（任意）<input type="text" id="st-section" placeholder="例：職員係"></label>
         <label>兼職（任意）<input type="text" id="st-sidejob" placeholder="例：自動車運転手"></label>
         <label>採用年月日（新規採用職員の6ヶ月除外に使用・任意）<input type="date" id="st-hire"></label>
+        <label>退職予定日（任意）<input type="date" id="st-retire"></label>
         <label class="checkbox-label"><input type="checkbox" id="st-citizen"> 市民課経験あり（手動指定）</label>
         <label class="checkbox-label"><input type="checkbox" id="st-active" checked> 対象に含める（休職等の場合は外す）</label>
         <button type="submit" class="btn-primary">追加する</button>
@@ -160,6 +163,7 @@
         <label>新規採用職員の除外期間（ヶ月）<input type="number" id="opt-newhire" value="6" min="0"></label>
         <label>年末年始・GWの遡り回数（同じ職員を避ける過去の回数）<input type="number" id="opt-lookback" value="2" min="0"></label>
         <label>ペア重複の遡り年度数（同じ組合せを避ける年度数）<input type="number" id="opt-pair-lookback" value="2" min="0"></label>
+        <label>退職予定日の何ヶ月前まで割当対象とするか<input type="number" id="opt-retire-lead" value="1" min="0"></label>
       </div>
       <button id="opt-save" class="btn-primary">保存する</button>
     </div>
@@ -316,6 +320,7 @@
         </table>
       </div>
       <div id="gen-unassigned-summary" class="hint"></div>
+      <div id="gen-overburdened-summary" class="hint"></div>
       <div class="row-actions">
         <button id="gen-confirm" class="btn-primary" disabled>この内容で確定・履歴に保存</button>
         <button id="gen-export" class="btn-secondary" disabled>CSVで書き出す</button>

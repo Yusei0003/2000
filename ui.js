@@ -16,12 +16,14 @@ const KEY_CURRENT_PERIOD = 'duty_current_period_v1';
 const KEY_STAFF_ID_MAP = 'duty_staff_id_map_v1'; // 職員番号→職員ID（処理期をまたいで同一人物を同一IDにするための恒久マップ）
 const KEY_PERIOD_STAFF = 'duty_period_staff_v1'; // 処理期ID→職員名簿（処理期ごとの名簿）
 const KEY_HISTORY_STAFF = 'duty_history_staff_v1'; // 勤務実績取込のみで登場する、どの処理期の名簿にもいない職員（表示名のみに使用）
+const KEY_IMPORT_EXCLUDED = 'duty_import_excluded_v1'; // 処理期ID→Excel名簿取込時に除外された行の一覧（CSV書出用）
 
 const DEFAULT_SETTINGS = {
   minGapDays: 120,
   newHireMonths: 6,
   specialLookback: 2,
   pairLookbackYears: 2,
+  retireLeadMonths: 1,
   standingExcludedDepts: [],
 };
 const DEFAULT_MONTH_RULES = [
@@ -176,6 +178,7 @@ let periods = load(KEY_PERIODS, []);
 let currentPeriodId = load(KEY_CURRENT_PERIOD, null);
 let staffIdMap = load(KEY_STAFF_ID_MAP, {}); // 職員番号 -> 職員ID
 let periodStaff = load(KEY_PERIOD_STAFF, {}); // 処理期ID -> 職員名簿配列
+let periodImportExcluded = load(KEY_IMPORT_EXCLUDED, {}); // 処理期ID -> Excel名簿取込時に除外された行の一覧
 let historyStaffStubs = load(KEY_HISTORY_STAFF, []); // どの処理期の名簿にもいない、勤務実績のみの職員
 
 /** 職員番号に対応する恒久的な職員IDを返す（無ければ新規発行して記憶する） */
@@ -700,6 +703,8 @@ function staffRowHtml(s, { showReason }) {
       <td>${escapeHtml(s.title || '')}</td>
       <td>${escapeHtml(s.dept)}</td>
       <td>${escapeHtml(s.section || '')}</td>
+      <td>${escapeHtml(s.status || '')}</td>
+      <td>${s.age != null ? escapeHtml(s.age) : ''}</td>
       <td>
         <label class="checkbox-label" style="gap:4px">
           <input type="checkbox" class="citizen-toggle" data-id="${s.id}" ${citizen ? 'checked' : ''}>
@@ -710,6 +715,7 @@ function staffRowHtml(s, { showReason }) {
       <td><input type="checkbox" class="seventy-toggle" data-id="${s.id}" ${s.seventyPercent ? 'checked' : ''}></td>
       ${showReason ? `<td>${escapeHtml(exclusionReason(s))}</td>` : ''}
       <td>${escapeHtml(s.hireDate || '')}</td>
+      <td><input type="date" class="retire-input" data-id="${s.id}" value="${escapeHtml(s.retireDate || '')}"></td>
       <td><button class="btn-danger" data-del="${s.id}">削除</button></td>
     </tr>`;
 }
@@ -741,6 +747,14 @@ function attachStaffRowHandlers(tbody) {
     cb.addEventListener('change', () => {
       const s = staffById(cb.dataset.id);
       s.seventyPercent = cb.checked;
+      savePeriodStaff();
+      renderStaffTable();
+    });
+  });
+  tbody.querySelectorAll('.retire-input').forEach((inp) => {
+    inp.addEventListener('change', () => {
+      const s = staffById(inp.dataset.id);
+      s.retireDate = inp.value || null;
       savePeriodStaff();
       renderStaffTable();
     });
@@ -806,7 +820,7 @@ function initStaffForm() {
       section: document.getElementById('st-section').value.trim(),
       sideJob: document.getElementById('st-sidejob').value.trim(),
       hireDate: document.getElementById('st-hire').value || null,
-      retireDate: null,
+      retireDate: document.getElementById('st-retire').value || (carry && carry.retireDate) || null,
       deptHistory: [],
       citizenExp: document.getElementById('st-citizen').checked || !!(carry && carry.citizenExp),
       dispatched: !!(carry && carry.dispatched),
@@ -851,7 +865,7 @@ function initStaffForm() {
         sideJob: '',
         deptHistory: [],
         hireDate: (hireDate || '').trim() || null,
-        retireDate: null,
+        retireDate: (carry && carry.retireDate) || null,
         citizenExp: /true|○|はい/i.test(citizenRaw || '') || !!(carry && carry.citizenExp),
         dispatched: !!(carry && carry.dispatched),
         seventyPercent: !!(carry && carry.seventyPercent),
@@ -872,6 +886,31 @@ function initStaffForm() {
       staff.map((s) => [s.number, s.name, LEVEL_LABEL[s.level], s.title || '', s.dept, s.section || '', s.citizenExp ? 'TRUE' : 'FALSE', s.hireDate || ''])
     );
     downloadCsv('職員名簿.csv', rows);
+  });
+
+  document.getElementById('staff-import-excluded-export-btn').addEventListener('click', () => {
+    const excluded = periodImportExcluded[currentPeriod().id] || [];
+    if (!excluded.length) {
+      alert('この処理期でExcel名簿取込により除外された職員はいません。');
+      return;
+    }
+    const rows = [['職員番号', '区分名', '身分', '名前', '所属名', '職名', '年齢']].concat(
+      excluded.map((r) => [r.number, r.category || '', r.status || '', r.name, r.dept || '', r.title || '', r.age != null ? r.age : ''])
+    );
+    downloadCsv('Excel取込で除外された人.csv', rows);
+  });
+
+  document.getElementById('staff-excluded-list-export-btn').addEventListener('click', () => {
+    const standingDepts = currentPeriod().standingExcludedDepts;
+    const excludedList = staff.filter((s) => s.active === false || isStandingExcluded(s, standingDepts));
+    if (!excludedList.length) {
+      alert('この処理期の除外リストに該当する職員はいません。');
+      return;
+    }
+    const rows = [['職員番号', '区分名', '身分', '名前', '所属名', '職名', '年齢', '除外理由']].concat(
+      excludedList.map((s) => [s.number, s.category || '', s.status || '', s.name, s.dept || '', s.title || '', s.age != null ? s.age : '', exclusionReason(s)])
+    );
+    downloadCsv('除外リストの人.csv', rows);
   });
 
   const clearBtn = document.getElementById('staff-clear-btn');
@@ -982,6 +1021,8 @@ function parseStaffWorkbook(workbook) {
     const idxSection = col('係名');
     const idxSideJob = col('兼職');
     const idxCategory = col('区分名');
+    const idxStatus = col('身分');
+    const idxAge = col('年度年齢');
     const idxRank = col('ランク');
     const idxHire = col('採用日');
     const idxRetire = col('退職日');
@@ -999,6 +1040,8 @@ function parseStaffWorkbook(workbook) {
         section: idxSection >= 0 ? String(r[idxSection] || '').trim() : '',
         sideJob: idxSideJob >= 0 ? String(r[idxSideJob] || '').trim() : '',
         category: idxCategory >= 0 ? String(r[idxCategory] || '').trim() : '',
+        status: idxStatus >= 0 ? String(r[idxStatus] || '').trim() : '',
+        age: idxAge >= 0 && r[idxAge] !== null && r[idxAge] !== undefined && r[idxAge] !== '' ? Number(r[idxAge]) : null,
         rank: idxRank >= 0 && r[idxRank] !== null && r[idxRank] !== undefined && r[idxRank] !== '' ? Number(r[idxRank]) : null,
         hireDate: idxHire >= 0 ? excelValueToISO(r[idxHire]) : null,
         retireDate: idxRetire >= 0 ? excelValueToISO(r[idxRetire]) : null,
@@ -1096,6 +1139,7 @@ function initStaffXlsxImport() {
     save(KEY_TITLE_LEVEL_MAP, titleLevelMap);
 
     const prevMap = previousPeriodStaffMap();
+    const periodStartDate = currentPeriod().startDate;
     let imported = 0;
     let skipped = 0;
     let skippedByCategory = 0;
@@ -1104,15 +1148,23 @@ function initStaffXlsxImport() {
     let carriedDispatched = 0;
     let carriedSeventy = 0;
     const newStaff = [];
+    const excludedRows = [];
     staffXlsxRows.forEach((r) => {
       if (isExcludedCategory(r.category)) {
         skippedByCategory++;
+        excludedRows.push({ ...r, reason: '区分による除外' });
         return;
       }
       const level = resolveImportLevel(r);
-      const retired = !!r.retireDate || r.activeFlag === 0 || r.activeFlag === '0';
-      if (level === 'exclude' || retired) {
+      if (level === 'exclude') {
         skipped++;
+        excludedRows.push({ ...r, reason: '職名から級を判定できないため除外' });
+        return;
+      }
+      const alreadyRetired = (r.retireDate && r.retireDate < periodStartDate) || r.activeFlag === 0 || r.activeFlag === '0';
+      if (alreadyRetired) {
+        skipped++;
+        excludedRows.push({ ...r, reason: '退職済みのため除外' });
         return;
       }
       const prev = prevMap.get(r.number);
@@ -1139,18 +1191,23 @@ function initStaffXlsxImport() {
         gender: r.gender,
         section: r.section,
         sideJob: r.sideJob,
+        category: r.category,
+        status: r.status,
+        age: r.age,
         citizenExp,
         dispatched,
         seventyPercent,
         deptHistory,
         hireDate: r.hireDate,
-        retireDate: null,
+        retireDate: r.retireDate || (prev && prev.retireDate) || null,
         active: true,
       });
       imported++;
     });
     staff = newStaff;
     savePeriodStaff();
+    periodImportExcluded[currentPeriod().id] = excludedRows;
+    save(KEY_IMPORT_EXCLUDED, periodImportExcluded);
     renderStaffTable();
     renderStandingRuleList();
     document.getElementById('staff-xlsx-input').value = '';
@@ -1178,6 +1235,7 @@ function renderOptions() {
   document.getElementById('opt-newhire').value = settings.newHireMonths;
   document.getElementById('opt-lookback').value = settings.specialLookback;
   document.getElementById('opt-pair-lookback').value = settings.pairLookbackYears;
+  document.getElementById('opt-retire-lead').value = settings.retireLeadMonths;
 }
 function initOptions() {
   renderOptions();
@@ -1186,6 +1244,7 @@ function initOptions() {
     settings.newHireMonths = Number(document.getElementById('opt-newhire').value) || 0;
     settings.specialLookback = Number(document.getElementById('opt-lookback').value) || 0;
     settings.pairLookbackYears = Number(document.getElementById('opt-pair-lookback').value) || 0;
+    settings.retireLeadMonths = Number(document.getElementById('opt-retire-lead').value) || 0;
     save(KEY_SETTINGS, settings);
     showToast('設定を保存しました');
   });
@@ -1776,6 +1835,8 @@ function renderGenResultTable() {
           minGapDays: settings.minGapDays,
           newHireMonths: settings.newHireMonths,
           leaves,
+          specialLookback: settings.specialLookback,
+          retireLeadMonths: settings.retireLeadMonths,
         };
         const items = genUnassigned
           .map(
@@ -1786,6 +1847,44 @@ function renderGenResultTable() {
           )
           .join('');
         unassignedEl.innerHTML = `<p style="margin:0 0 4px;font-weight:600">今期まだ割り当てられていない対象職員（${genUnassigned.length}名）</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
+      }
+    }
+  }
+
+  const overEl = document.getElementById('gen-overburdened-summary');
+  if (overEl) {
+    if (!draftResults.length) {
+      overEl.innerHTML = '';
+    } else {
+      const genTargetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts));
+      const p = currentPeriod();
+      const countMap = new Map();
+      const bump = (id) => {
+        if (id) countMap.set(id, (countMap.get(id) || 0) + 1);
+      };
+      history.forEach((h) => {
+        if (h.periodId !== p.id) return;
+        bump(h.seniorId);
+        bump(h.juniorId);
+      });
+      draftResults.forEach((r) => {
+        bump(r.seniorId);
+        bump(r.juniorId);
+      });
+      const overburdened = genTargetStaff
+        .map((s) => ({ s, count: countMap.get(s.id) || 0 }))
+        .filter((x) => x.count >= 2)
+        .sort((a, b) => b.count - a.count);
+      if (!overburdened.length) {
+        overEl.innerHTML = '';
+      } else {
+        const counts = genTargetStaff.map((s) => countMap.get(s.id) || 0);
+        const max = counts.length ? Math.max(...counts) : 0;
+        const avg = counts.length ? counts.reduce((a, b) => a + b, 0) / counts.length : 0;
+        const items = overburdened
+          .map(({ s, count }) => `<li><strong>${escapeHtml(s.name)}</strong>（${LEVEL_LABEL[s.level]}・${escapeHtml(s.dept)}）：${count}回</li>`)
+          .join('');
+        overEl.innerHTML = `<p style="margin:0 0 4px;font-weight:600">今期の担当回数：最大${max}回／平均${avg.toFixed(1)}回／2回以上 ${overburdened.length}名</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
       }
     }
   }
@@ -1902,6 +2001,7 @@ function initGenerateRun() {
       pairLookbackYears: settings.pairLookbackYears,
       standingExcludedDepts: currentPeriod().standingExcludedDepts,
       leaves,
+      retireLeadMonths: settings.retireLeadMonths,
       periodId: currentPeriod().id,
     });
     renderGenResultTable();
@@ -2220,6 +2320,7 @@ function closeChangeModal() {
 const BACKUP_KEYS = {
   staffIdMap: KEY_STAFF_ID_MAP,
   periodStaff: KEY_PERIOD_STAFF,
+  periodImportExcluded: KEY_IMPORT_EXCLUDED,
   historyStaff: KEY_HISTORY_STAFF,
   monthRules: KEY_MONTH_RULES,
   fiscalEvents: KEY_FISCAL_EVENTS,

@@ -271,6 +271,14 @@ function passesNewHire(staff, date, newHireMonths) {
   const limit = addMonths(hire, newHireMonths);
   return date >= limit;
 }
+/** 退職予定日の retireLeadMonths ヶ月前まで（既定1ヶ月）を対象とする。育休・産休と同様、
+ *  人数不足時の最終手段でも緩和しない絶対条件（退職後に当番はあり得ないため）。 */
+function passesRetire(staff, date, retireLeadMonths) {
+  if (!staff.retireDate) return true;
+  const retire = parseISO(staff.retireDate);
+  const limit = addMonths(retire, -retireLeadMonths);
+  return date <= limit;
+}
 function passesGap(staffId, date, minGapDays, lastDateMap) {
   const last = lastDateMap.get(staffId);
   if (!last) return true;
@@ -371,6 +379,7 @@ function generateAssignments({
   pairLookbackYears = 2,
   standingExcludedDepts = [],
   leaves = [], // [{staffNumber, startDate, endDate}] 育休等による除外期間
+  retireLeadMonths = 1, // 退職予定日のNヶ月前までを対象とする（既定1ヶ月）
   periodId = null, // 指定すると、同一処理期内は原則1人1回の割当にする
 }) {
   const countMap = new Map();
@@ -464,6 +473,7 @@ function generateAssignments({
           s.level === level &&
           (gender == null || s.gender === gender) &&
           !isOnLeave(s, date, leaves) &&
+          passesRetire(s, date, retireLeadMonths) &&
           ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
           !bannedBySpecial.has(s.id) &&
           passesNewHire(s, date, newHireMonths) &&
@@ -556,6 +566,15 @@ function generateAssignments({
         }
         if (pair && ignoreGap) forcedIgnoredGap = true;
       }
+      // 最終手段で選んだペアは tryGender の repeat 判定を経ていないため、ここで改めて判定する
+      // （最終手段で選んだ相手が今期割当済みでも「2回目の割当」の表示が欠落しないようにする）。
+      if (forcedFallbackUsed) {
+        repeat = !!(
+          periodId &&
+          pair &&
+          ((pair.senior && periodUsedIds.has(pair.senior.id)) || (pair.junior && periodUsedIds.has(pair.junior.id)))
+        );
+      }
       return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap };
     };
 
@@ -601,9 +620,10 @@ function generateAssignments({
     } else if (assignedCount === 1) {
       reasons.push('人数不足のため1名のみの割当です（相方となる対象者がいません）');
     } else if (forcedFallbackUsed) {
+      if (repeat) reasons.push('同一処理期内で2回目の割当です');
       if (forcedNoSenior) reasons.push('係長級が含まれていません（人数不足のため）');
       if (forcedIgnoredGap) reasons.push(`前回勤務日から${minGapDays}日未満の職員を含みます（人数不足のため）`);
-      if (!forcedNoSenior && !forcedIgnoredGap) {
+      if (!repeat && !forcedNoSenior && !forcedIgnoredGap) {
         reasons.push('人数不足のため、通常のルールを緩和して割り当てました');
       }
     } else {
@@ -663,22 +683,29 @@ function generateAssignments({
  * 今回の作成分（dutyDates／results）で staffMember が一度も割り当てられなかった理由を説明する文字列を返す。
  * 完全なシミュレーションではなく、各対象日について「本人の属性で明らかに対象外だったか」を積み上げて説明する。
  */
-function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, monthRules, eventExclusions, history, minGapDays, newHireMonths, leaves }) {
+function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, monthRules, eventExclusions, history, minGapDays, newHireMonths, leaves, specialLookback, retireLeadMonths = 1 }) {
   if (!staffMember.gender) {
     return '性別が未設定のため割当対象になりません（職員名簿でご確認ください）。';
   }
 
   const lastDateMap = new Map();
+  const specialUse = new Map(); // key -> Set(staffId)
   (history || []).forEach((h) => {
     [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => {
       const d = parseISO(h.date);
       const prevLast = lastDateMap.get(id);
       if (!prevLast || d > prevLast) lastDateMap.set(id, d);
     });
+    if (h.specialPeriodKey) {
+      if (!specialUse.has(h.specialPeriodKey)) specialUse.set(h.specialPeriodKey, new Set());
+      [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => specialUse.get(h.specialPeriodKey).add(id));
+    }
   });
 
   let genderSkipped = 0;
   let blockedLeave = 0;
+  let blockedRetire = 0;
+  let blockedSpecial = 0;
   let blockedNewHire = 0;
   let blockedGap = 0;
   let eligibleButNotChosen = 0;
@@ -698,6 +725,22 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
     if (isOnLeave(staffMember, date, leaves)) {
       blockedLeave++;
       return;
+    }
+    if (!passesRetire(staffMember, date, retireLeadMonths)) {
+      blockedRetire++;
+      return;
+    }
+
+    const special = detectSpecialPeriod(date);
+    if (special) {
+      const banned = previousSpecialKeys(special.key, specialLookback || 2).some((k) => {
+        const set = specialUse.get(k);
+        return set && set.has(staffMember.id);
+      });
+      if (banned) {
+        blockedSpecial++;
+        return;
+      }
     }
 
     const month = date.getMonth() + 1;
@@ -727,21 +770,22 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
     eligibleButNotChosen++;
   });
 
+  const zoneLabel = staffMember.gender === 'M' ? '女性ゾーン' : '男性ゾーン';
   const consideredDays = dutyDates.length - genderSkipped;
   if (consideredDays === 0) {
-    const other = staffMember.gender === 'M' ? '女性' : '男性';
-    return `対象日はすべて${other}でペアが組めたため、対象になりませんでした（枯渇ベースのルールにより${other}が優先されました）。`;
+    return `対象期間はすべて${zoneLabel}のまま終了したため、対象になりませんでした（性別ゾーン方式：女性ゾーンから男性ゾーンへ一方向に切り替わり、戻りません）。`;
   }
 
   const parts = [];
   if (blockedLeave > 0) parts.push(`育休・産休等の除外期間中（${blockedLeave}日）`);
+  if (blockedRetire > 0) parts.push(`退職予定日の${retireLeadMonths}ヶ月前を過ぎているため対象外（${blockedRetire}日）`);
+  if (blockedSpecial > 0) parts.push(`年末年始・GWの重複回避により対象外（前回・前々回の同期間の担当者のため・${blockedSpecial}日）`);
   if (deptLabels.size > 0) parts.push(`所属の除外ルールに該当（${[...deptLabels].join('・')}）`);
   if (blockedNewHire > 0) parts.push(`採用から${newHireMonths}ヶ月未満のため対象外（${blockedNewHire}日）`);
   if (blockedGap > 0) parts.push(`前回勤務日から${minGapDays}日未満のため対象外（${blockedGap}日）`);
   if (eligibleButNotChosen > 0) parts.push(`候補ではあったが、今期の割当枠が他の職員で埋まったため選ばれなかった（1人1回が基本のルールのため・${eligibleButNotChosen}日）`);
   if (genderSkipped > 0) {
-    const other = staffMember.gender === 'M' ? '女性' : '男性';
-    parts.push(`${other}でペアが組めたため対象外だった日（${genderSkipped}日）`);
+    parts.push(`${zoneLabel}でなかった日のため対象外だった日（${genderSkipped}日）`);
   }
 
   return parts.length ? parts.join('、') + '。' : '理由を特定できませんでした。';
