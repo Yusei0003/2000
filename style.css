@@ -79,6 +79,22 @@ body {
   border: 1px solid var(--warning-border);
   border-radius: var(--radius);
 }
+.gen-notice-box {
+  padding: 10px 14px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius);
+  margin: 10px 0;
+  font-weight: 600;
+}
+.gen-confirmed-banner {
+  padding: 10px 14px;
+  background: #eef2ff;
+  border: 1px solid #a5b4fc;
+  border-radius: var(--radius);
+  margin: 10px 0;
+  font-weight: 600;
+}
 
 .tabs {
   display: flex;

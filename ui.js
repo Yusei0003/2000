@@ -17,6 +17,7 @@ const KEY_STAFF_ID_MAP = 'duty_staff_id_map_v1'; // 職員番号→職員ID（�
 const KEY_PERIOD_STAFF = 'duty_period_staff_v1'; // 処理期ID→職員名簿（処理期ごとの名簿）
 const KEY_HISTORY_STAFF = 'duty_history_staff_v1'; // 勤務実績取込のみで登場する、どの処理期の名簿にもいない職員（表示名のみに使用）
 const KEY_IMPORT_EXCLUDED = 'duty_import_excluded_v1'; // 処理期ID→Excel名簿取込時に除外された行の一覧（CSV書出用）
+const KEY_GEN_SESSION = 'duty_gen_session_v1'; // 処理期ID→勤務表作成タブの作業状態（決裁・確定・引き戻し履歴を含む）
 
 const DEFAULT_SETTINGS = {
   minGapDays: 120,
@@ -179,6 +180,7 @@ let currentPeriodId = load(KEY_CURRENT_PERIOD, null);
 let staffIdMap = load(KEY_STAFF_ID_MAP, {}); // 職員番号 -> 職員ID
 let periodStaff = load(KEY_PERIOD_STAFF, {}); // 処理期ID -> 職員名簿配列
 let periodImportExcluded = load(KEY_IMPORT_EXCLUDED, {}); // 処理期ID -> Excel名簿取込時に除外された行の一覧
+let genSessions = load(KEY_GEN_SESSION, {}); // 処理期ID -> 勤務表作成タブの作業状態
 let historyStaffStubs = load(KEY_HISTORY_STAFF, []); // どの処理期の名簿にもいない、勤務実績のみの職員
 
 /** 職員番号に対応する恒久的な職員IDを返す（無ければ新規発行して記憶する） */
@@ -442,6 +444,8 @@ function initPeriodBar() {
     save(KEY_HISTORY, history);
     periods = periods.filter((x) => x.id !== p.id);
     save(KEY_PERIODS, periods);
+    delete genSessions[p.id];
+    save(KEY_GEN_SESSION, genSessions);
     currentPeriodId = null;
     const next = currentPeriod(); // フォールバックで自動的に別の処理期（無ければ今日の処理期を新規作成）に切り替わる
     historyPeriodFilter = next.id;
@@ -464,7 +468,14 @@ function renderAllForPeriod() {
 }
 
 let draftDates = []; // 勤務表作成タブの作業中の指定日
-let draftResults = []; // 作成された勤務表（未確定）
+let draftResults = []; // 作成された勤務表（未確定、または確定済みの表示内容）
+let genStatus = 'draft'; // 'draft'（作成・修正中） | 'confirmed'（決裁・確定済み、編集ロック）
+let genConfirmBatchId = null; // 確定時に発行するID。引き戻し時にこのIDを持つ履歴のみ削除する
+let genConfirmedAt = null; // 確定（決裁）日時
+let genApprovalChecked = false; // 「決裁が完了したことを確認しました」チェックの状態
+let genLog = []; // 引き戻しにより解除された過去の確定内容（作成履歴）
+let genFrozenUnassignedHtml = null; // 確定時点の「未割当職員」表示のスナップショット（確定後は再計算せずこれを表示する）
+let genFrozenOverburdenedHtml = null; // 確定時点の「担当回数が多い職員」表示のスナップショット
 let staffXlsxRows = null; // Excel名簿取込：解析結果の一時保持
 let historyXlsxRows = null; // Excel勤務実績取込：解析結果の一時保持
 let currentEventYear = fiscalYearOf(new Date());
@@ -1688,6 +1699,7 @@ function computeEventExclusions() {
  * ------------------------------------------------------------ */
 let genDatesEmptyReason = null; // 抽出結果が0件だった理由（表示用）
 function renderGenDatesTable() {
+  const locked = genStatus === 'confirmed';
   const tbody = document.getElementById('gen-dates-tbody');
   tbody.innerHTML = draftDates
     .map(
@@ -1696,21 +1708,29 @@ function renderGenDatesTable() {
       <td>${d.date}</td>
       <td>${WEEKDAY_LABEL[d.weekday]}</td>
       <td>${escapeHtml(d.holidayName || '')}</td>
-      <td><input type="checkbox" class="gen-date-toggle" data-idx="${i}" ${d.include !== false ? 'checked' : ''}></td>
+      <td><input type="checkbox" class="gen-date-toggle" data-idx="${i}" ${d.include !== false ? 'checked' : ''} ${locked ? 'disabled' : ''}></td>
     </tr>`
     )
     .join('');
   document.getElementById('gen-dates-summary').textContent = draftDates.length
-    ? `${draftDates.length} 日を抽出しました（対象から外したい日はチェックを外してください）`
+    ? `${draftDates.length} 日を抽出しました${locked ? '' : '（対象から外したい日はチェックを外してください）'}`
     : genDatesEmptyReason || '';
   tbody.querySelectorAll('.gen-date-toggle').forEach((cb) => {
     cb.addEventListener('change', () => {
+      if (genStatus === 'confirmed') return;
       draftDates[Number(cb.dataset.idx)].include = cb.checked;
+      genApprovalChecked = false;
+      saveGenSession();
+      renderGenApprovalUi();
     });
   });
 }
 function initGenerateDates() {
   document.getElementById('gen-list-dates').addEventListener('click', () => {
+    if (genStatus === 'confirmed') {
+      alert('確定済みです。修正するには「引き戻して修正」を押してください。');
+      return;
+    }
     const start = document.getElementById('gen-start').value;
     const end = document.getElementById('gen-end').value;
     if (!start || !end) {
@@ -1725,11 +1745,15 @@ function initGenerateDates() {
       : raw.length
       ? '対象期間内の土日・祝日・年末年始は、すべて確定済み履歴に含まれています（履歴・確認タブでご確認ください）。'
       : '対象期間内に土日・祝日・年末年始がありません。';
+    genApprovalChecked = false;
+    saveGenSession();
+    renderGenApprovalUi();
     renderGenDatesTable();
   });
 }
 
 function renderGenResultTable() {
+  const locked = genStatus === 'confirmed';
   const tbody = document.getElementById('gen-result-tbody');
   tbody.innerHTML = draftResults
     .map(
@@ -1739,12 +1763,12 @@ function renderGenResultTable() {
       <td>${WEEKDAY_LABEL[r.weekday]}</td>
       <td>${escapeHtml(r.holidayName || '')}</td>
       <td>
-        <span class="assign-name-chip" draggable="true" data-idx="${i}" data-level="senior" title="ドラッグして他の日・欄の職員と入れ替えられます">${r.seniorName ? escapeHtml(r.seniorName) : '未定'}</span>
-        ${renderStaffSelect(i, 'senior', r.seniorId)}
+        <span class="assign-name-chip" draggable="${locked ? 'false' : 'true'}" data-idx="${i}" data-level="senior" title="ドラッグして他の日・欄の職員と入れ替えられます">${r.seniorName ? escapeHtml(r.seniorName) : '未定'}</span>
+        ${renderStaffSelect(i, 'senior', r.seniorId, locked)}
       </td>
       <td>
-        <span class="assign-name-chip" draggable="true" data-idx="${i}" data-level="junior" title="ドラッグして他の日・欄の職員と入れ替えられます">${r.juniorName ? escapeHtml(r.juniorName) : '未定'}</span>
-        ${renderStaffSelect(i, 'junior', r.juniorId)}
+        <span class="assign-name-chip" draggable="${locked ? 'false' : 'true'}" data-idx="${i}" data-level="junior" title="ドラッグして他の日・欄の職員と入れ替えられます">${r.juniorName ? escapeHtml(r.juniorName) : '未定'}</span>
+        ${renderStaffSelect(i, 'junior', r.juniorId, locked)}
       </td>
       <td>${r.status === 'ok' ? 'OK' : (r.status === 'error' ? 'エラー：' : '要確認：') + escapeHtml(r.reason)}</td>
     </tr>`
@@ -1753,12 +1777,15 @@ function renderGenResultTable() {
 
   tbody.querySelectorAll('.result-select').forEach((sel) => {
     sel.addEventListener('change', () => {
+      if (genStatus === 'confirmed') return;
       const idx = Number(sel.dataset.idx);
       const level = sel.dataset.level;
       const s = staffById(sel.value) || null;
       draftResults[idx][level + 'Id'] = s ? s.id : null;
       draftResults[idx][level + 'Name'] = s ? s.name : '';
       revalidateDraftResult(idx);
+      genApprovalChecked = false;
+      saveGenSession();
       renderGenResultTable();
     });
   });
@@ -1766,6 +1793,7 @@ function renderGenResultTable() {
   let dragSource = null;
   tbody.querySelectorAll('.assign-name-chip').forEach((chip) => {
     chip.addEventListener('dragstart', (e) => {
+      if (genStatus === 'confirmed') return;
       dragSource = { idx: Number(chip.dataset.idx), level: chip.dataset.level };
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', chip.textContent);
@@ -1795,6 +1823,8 @@ function renderGenResultTable() {
       }
       swapDraftResultSlots(dragSource, target);
       dragSource = null;
+      genApprovalChecked = false;
+      saveGenSession();
       renderGenResultTable();
     });
   });
@@ -1806,97 +1836,96 @@ function renderGenResultTable() {
     : '';
 
   const unassignedEl = document.getElementById('gen-unassigned-summary');
-  if (unassignedEl) {
-    if (!draftResults.length) {
-      unassignedEl.innerHTML = '';
-    } else {
-      const genTargetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts));
-      const p = currentPeriod();
-      const assignedIds = new Set();
-      history.forEach((h) => {
-        if (h.periodId !== p.id) return;
-        if (h.seniorId) assignedIds.add(h.seniorId);
-        if (h.juniorId) assignedIds.add(h.juniorId);
-      });
-      draftResults.forEach((r) => {
-        if (r.seniorId) assignedIds.add(r.seniorId);
-        if (r.juniorId) assignedIds.add(r.juniorId);
-      });
-      const genUnassigned = genTargetStaff.filter((s) => !assignedIds.has(s.id));
-      if (!genUnassigned.length) {
-        unassignedEl.innerHTML = '<p style="margin:0;font-weight:600">対象職員は全員、今期すでに少なくとも1回は割り当てられています。</p>';
-      } else {
-        const explainCtx = {
-          dutyDates: draftResults.map((r) => ({ date: r.date })),
-          results: draftResults,
-          staffList: staff,
-          monthRules,
-          eventExclusions: computeEventExclusions(),
-          history,
-          minGapDays: settings.minGapDays,
-          newHireMonths: settings.newHireMonths,
-          leaves,
-          specialLookback: settings.specialLookback,
-          retireLeadMonths: settings.retireLeadMonths,
-        };
-        const items = genUnassigned
-          .map(
-            (s) =>
-              `<li><strong>${escapeHtml(s.name)}</strong>（${LEVEL_LABEL[s.level]}・${escapeHtml(s.dept)}）：${escapeHtml(
-                explainUnassignedStaff(s, explainCtx)
-              )}</li>`
-          )
-          .join('');
-        unassignedEl.innerHTML = `<p style="margin:0 0 4px;font-weight:600">今期まだ割り当てられていない対象職員（${genUnassigned.length}名）</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
-      }
-    }
-  }
-
   const overEl = document.getElementById('gen-overburdened-summary');
-  if (overEl) {
-    if (!draftResults.length) {
-      overEl.innerHTML = '';
-    } else {
-      const genTargetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts));
-      const p = currentPeriod();
-      const countMap = new Map();
-      const bump = (id) => {
-        if (id) countMap.set(id, (countMap.get(id) || 0) + 1);
-      };
-      history.forEach((h) => {
-        if (h.periodId !== p.id) return;
-        bump(h.seniorId);
-        bump(h.juniorId);
-      });
-      draftResults.forEach((r) => {
-        bump(r.seniorId);
-        bump(r.juniorId);
-      });
-      const overburdened = genTargetStaff
-        .map((s) => ({ s, count: countMap.get(s.id) || 0 }))
-        .filter((x) => x.count >= 2)
-        .sort((a, b) => b.count - a.count);
-      if (!overburdened.length) {
-        overEl.innerHTML = '';
-      } else {
-        const counts = genTargetStaff.map((s) => countMap.get(s.id) || 0);
-        const max = counts.length ? Math.max(...counts) : 0;
-        const avg = counts.length ? counts.reduce((a, b) => a + b, 0) / counts.length : 0;
-        const items = overburdened
-          .map(({ s, count }) => `<li><strong>${escapeHtml(s.name)}</strong>（${LEVEL_LABEL[s.level]}・${escapeHtml(s.dept)}）：${count}回</li>`)
-          .join('');
-        overEl.innerHTML = `<p style="margin:0 0 4px;font-weight:600">今期の担当回数：最大${max}回／平均${avg.toFixed(1)}回／2回以上 ${overburdened.length}名</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
-      }
-    }
+  if (locked && (genFrozenUnassignedHtml !== null || genFrozenOverburdenedHtml !== null)) {
+    // 確定済み：確定時点のスナップショットをそのまま表示する（その後の名簿・履歴の変更に影響されない）
+    if (unassignedEl) unassignedEl.innerHTML = genFrozenUnassignedHtml || '';
+    if (overEl) overEl.innerHTML = genFrozenOverburdenedHtml || '';
+  } else {
+    if (unassignedEl) unassignedEl.innerHTML = computeUnassignedSummaryHtml();
+    if (overEl) overEl.innerHTML = computeOverburdenedSummaryHtml();
   }
 
-  document.getElementById('gen-confirm').disabled = draftResults.length === 0;
   document.getElementById('gen-export').disabled = draftResults.length === 0;
   document.getElementById('gen-pdf').disabled = draftResults.length === 0;
+  renderGenApprovalUi();
+}
+/** 「今期まだ割り当てられていない対象職員」サマリのHTMLを、現在のstaff/historyから計算する */
+function computeUnassignedSummaryHtml() {
+  if (!draftResults.length) return '';
+  const genTargetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts));
+  const p = currentPeriod();
+  const assignedIds = new Set();
+  history.forEach((h) => {
+    if (h.periodId !== p.id) return;
+    if (h.seniorId) assignedIds.add(h.seniorId);
+    if (h.juniorId) assignedIds.add(h.juniorId);
+  });
+  draftResults.forEach((r) => {
+    if (r.seniorId) assignedIds.add(r.seniorId);
+    if (r.juniorId) assignedIds.add(r.juniorId);
+  });
+  const genUnassigned = genTargetStaff.filter((s) => !assignedIds.has(s.id));
+  if (!genUnassigned.length) {
+    return '<p style="margin:0;font-weight:600">対象職員は全員、今期すでに少なくとも1回は割り当てられています。</p>';
+  }
+  const explainCtx = {
+    dutyDates: draftResults.map((r) => ({ date: r.date })),
+    results: draftResults,
+    staffList: staff,
+    monthRules,
+    eventExclusions: computeEventExclusions(),
+    history,
+    minGapDays: settings.minGapDays,
+    newHireMonths: settings.newHireMonths,
+    leaves,
+    specialLookback: settings.specialLookback,
+    retireLeadMonths: settings.retireLeadMonths,
+  };
+  const items = genUnassigned
+    .map(
+      (s) =>
+        `<li><strong>${escapeHtml(s.name)}</strong>（${LEVEL_LABEL[s.level]}・${escapeHtml(s.dept)}）：${escapeHtml(
+          explainUnassignedStaff(s, explainCtx)
+        )}</li>`
+    )
+    .join('');
+  return `<p style="margin:0 0 4px;font-weight:600">今期まだ割り当てられていない対象職員（${genUnassigned.length}名）</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
+}
+/** 「今期の担当回数が多い職員」サマリのHTMLを、現在のstaff/historyから計算する */
+function computeOverburdenedSummaryHtml() {
+  if (!draftResults.length) return '';
+  const genTargetStaff = staff.filter((s) => s.active !== false && !isStandingExcluded(s, currentPeriod().standingExcludedDepts));
+  const p = currentPeriod();
+  const countMap = new Map();
+  const bump = (id) => {
+    if (id) countMap.set(id, (countMap.get(id) || 0) + 1);
+  };
+  history.forEach((h) => {
+    if (h.periodId !== p.id) return;
+    bump(h.seniorId);
+    bump(h.juniorId);
+  });
+  draftResults.forEach((r) => {
+    bump(r.seniorId);
+    bump(r.juniorId);
+  });
+  const overburdened = genTargetStaff
+    .map((s) => ({ s, count: countMap.get(s.id) || 0 }))
+    .filter((x) => x.count >= 2)
+    .sort((a, b) => b.count - a.count);
+  if (!overburdened.length) return '';
+  const counts = genTargetStaff.map((s) => countMap.get(s.id) || 0);
+  const max = counts.length ? Math.max(...counts) : 0;
+  const avg = counts.length ? counts.reduce((a, b) => a + b, 0) / counts.length : 0;
+  const items = overburdened
+    .map(({ s, count }) => `<li><strong>${escapeHtml(s.name)}</strong>（${LEVEL_LABEL[s.level]}・${escapeHtml(s.dept)}）：${count}回</li>`)
+    .join('');
+  return `<p style="margin:0 0 4px;font-weight:600">今期の担当回数：最大${max}回／平均${avg.toFixed(1)}回／2回以上 ${overburdened.length}名</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
 }
 /** level='senior'（1人目）は必ず係長級から選ぶ。level='junior'（2人目）は係長級・主事級のどちらも選べる
  *（1日2名のうち少なくとも1名が係長級であればよいため、係長級2名の組合せも許可している）。 */
-function renderStaffSelect(idx, level, currentId) {
+function renderStaffSelect(idx, level, currentId, disabled) {
   const standingDepts = currentPeriod().standingExcludedDepts;
   const pool = (level === 'senior' ? staff.filter((s) => s.level === 'senior') : staff).filter(
     (s) => s.active !== false && !isStandingExcluded(s, standingDepts)
@@ -1907,7 +1936,7 @@ function renderStaffSelect(idx, level, currentId) {
       return `<option value="${s.id}" ${s.id === currentId ? 'selected' : ''}>${label}</option>`;
     })
     .join('');
-  return `<select class="result-select" data-idx="${idx}" data-level="${level}"><option value="">未定</option>${options}</select>`;
+  return `<select class="result-select" data-idx="${idx}" data-level="${level}" ${disabled ? 'disabled' : ''}><option value="">未定</option>${options}</select>`;
 }
 /** 手動での入れ替え・選択後に、その日の組合せが実際のルールに反しないかを確認し、
  *  違反があれば理由の一覧を返す（空配列なら問題なし）。入れ替え自体は常に許可し、
@@ -1985,6 +2014,10 @@ function swapDraftResultSlots(a, b) {
 
 function initGenerateRun() {
   document.getElementById('gen-run').addEventListener('click', () => {
+    if (genStatus === 'confirmed') {
+      alert('確定済みです。修正するには「引き戻して修正」を押してください。');
+      return;
+    }
     const targetDates = draftDates.filter((d) => d.include !== false);
     if (!targetDates.length) {
       alert('対象の指定日がありません。まず「土日・祝日・年末年始を自動抽出」を実行してください。');
@@ -2005,26 +2038,89 @@ function initGenerateRun() {
       retireLeadMonths: settings.retireLeadMonths,
       periodId: currentPeriod().id,
     });
+    genApprovalChecked = false;
+    saveGenSession();
     renderGenResultTable();
     showToast('勤務表を作成しました');
   });
 
+  document.getElementById('gen-approval-check').addEventListener('change', (e) => {
+    if (genStatus === 'confirmed') return;
+    genApprovalChecked = e.target.checked;
+    saveGenSession();
+    renderGenApprovalUi();
+  });
+
   document.getElementById('gen-confirm').addEventListener('click', () => {
-    if (!draftResults.length) return;
+    if (genStatus === 'confirmed' || !draftResults.length) return;
+    if (!genApprovalChecked) {
+      alert('「決裁が完了したことを確認しました」にチェックを入れてから確定してください。勤務表の内容を確認・決裁してから確定してください。');
+      return;
+    }
+    // 除外対象者等の判断根拠（未割当・担当過多サマリ）を確定時点のまま凍結する。
+    // 確定後に名簿やルールが変わっても、確定時点の判断根拠が変化して見えないようにするため。
+    genFrozenUnassignedHtml = computeUnassignedSummaryHtml();
+    genFrozenOverburdenedHtml = computeOverburdenedSummaryHtml();
+
     const p = currentPeriod();
+    const batchId = uid('cb');
+    const confirmedAt = new Date().toISOString();
     const withLabel = draftResults.map((r) => ({
       ...r,
       periodId: p.id,
       periodLabel: p.label,
-      confirmedAt: new Date().toISOString(),
+      confirmedAt,
+      confirmBatchId: batchId,
     }));
     history = history.concat(withLabel).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     save(KEY_HISTORY, history);
-    showToast('履歴に保存しました');
-    draftResults = [];
-    draftDates = [];
-    renderGenResultTable();
+    renderHistoryTable();
+    renderCheckTable();
+
+    // 確定後も作成時の画面・内容を保持する（自動処理等で変更されないよう、以後は編集ロックする）
+    draftResults = withLabel;
+    genStatus = 'confirmed';
+    genConfirmBatchId = batchId;
+    genConfirmedAt = confirmedAt;
+    saveGenSession();
     renderGenDatesTable();
+    renderGenResultTable();
+    showToast('決裁済みとして確定し、履歴に保存しました');
+  });
+
+  document.getElementById('gen-revert').addEventListener('click', () => {
+    if (genStatus !== 'confirmed') return;
+    if (
+      !confirm(
+        '確定を引き戻して修正可能な状態に戻します。この回の確定分は確定済み履歴から削除されます（引き戻し前の内容は作成履歴として残ります）。よろしいですか？'
+      )
+    ) {
+      return;
+    }
+    const batchId = genConfirmBatchId;
+    history = history.filter((h) => h.confirmBatchId !== batchId);
+    save(KEY_HISTORY, history);
+    renderHistoryTable();
+    renderCheckTable();
+
+    genLog.push({
+      confirmBatchId: batchId,
+      confirmedAt: genConfirmedAt,
+      revokedAt: new Date().toISOString(),
+      dates: draftDates,
+      results: draftResults,
+    });
+    genStatus = 'draft';
+    genConfirmBatchId = null;
+    genConfirmedAt = null;
+    genApprovalChecked = false;
+    genFrozenUnassignedHtml = null;
+    genFrozenOverburdenedHtml = null;
+    saveGenSession();
+    renderGenDatesTable();
+    renderGenResultTable();
+    renderGenLog();
+    showToast('確定を引き戻しました。内容を修正のうえ、再度決裁・確定してください');
   });
 
   document.getElementById('gen-export').addEventListener('click', () => {
@@ -2039,18 +2135,128 @@ function initGenerateRun() {
     exportPeriodPdfByQuarter(period, draftResults, `日直勤務表_${period.label}.pdf`);
   });
 }
-/** 処理期の期間を勤務表作成タブの入力欄へ反映する */
+/** 勤務表作成タブの作業状態（指定日・結果・決裁/確定状態・引き戻し履歴）を、選択中の処理期に紐づけて保存する。
+ *  これにより、タブを離れたり画面を再読み込みしたりしても、作成時の内容がそのまま保持される。 */
+function saveGenSession() {
+  genSessions[currentPeriod().id] = {
+    status: genStatus,
+    dates: draftDates,
+    results: draftResults,
+    genDatesEmptyReason,
+    approvalChecked: genApprovalChecked,
+    confirmBatchId: genConfirmBatchId,
+    confirmedAt: genConfirmedAt,
+    log: genLog,
+    frozenUnassignedHtml: genFrozenUnassignedHtml,
+    frozenOverburdenedHtml: genFrozenOverburdenedHtml,
+  };
+  save(KEY_GEN_SESSION, genSessions);
+}
+/** 選択中の処理期の作業状態を読み込む（未保存の処理期は空の下書き状態から開始する） */
+function loadGenSessionForCurrentPeriod() {
+  const s = genSessions[currentPeriod().id];
+  genStatus = s && s.status === 'confirmed' ? 'confirmed' : 'draft';
+  draftDates = (s && s.dates) || [];
+  draftResults = (s && s.results) || [];
+  genDatesEmptyReason = (s && s.genDatesEmptyReason) || null;
+  genApprovalChecked = !!(s && s.approvalChecked);
+  genConfirmBatchId = (s && s.confirmBatchId) || null;
+  genConfirmedAt = (s && s.confirmedAt) || null;
+  genLog = (s && s.log) || [];
+  genFrozenUnassignedHtml = (s && s.frozenUnassignedHtml) || null;
+  genFrozenOverburdenedHtml = (s && s.frozenOverburdenedHtml) || null;
+}
+/** 決裁・確定に関する表示（注意書き／チェックボックス／確定バナー／各ボタンの活性状態）を更新する */
+function renderGenApprovalUi() {
+  const locked = genStatus === 'confirmed';
+  const hasResults = draftResults.length > 0;
+
+  const banner = document.getElementById('gen-confirmed-banner');
+  if (banner) {
+    banner.classList.toggle('hidden', !locked);
+    if (locked) {
+      const when = genConfirmedAt ? new Date(genConfirmedAt).toLocaleString('ja-JP') : '';
+      banner.textContent = `確定済みです（決裁・確定日時：${when}）。自動処理でこの内容が変更されることはありません。修正する場合は「引き戻して修正」を押してください。`;
+    }
+  }
+  const note = document.getElementById('gen-approval-note');
+  if (note) note.classList.toggle('hidden', locked);
+  const checkWrap = document.getElementById('gen-approval-checkbox-wrap');
+  if (checkWrap) checkWrap.classList.toggle('hidden', locked);
+  const check = document.getElementById('gen-approval-check');
+  if (check) {
+    check.checked = genApprovalChecked;
+    check.disabled = locked || !hasResults;
+  }
+
+  const confirmBtn = document.getElementById('gen-confirm');
+  if (confirmBtn) {
+    confirmBtn.classList.toggle('hidden', locked);
+    confirmBtn.disabled = locked || !hasResults || !genApprovalChecked;
+  }
+  const revertBtn = document.getElementById('gen-revert');
+  if (revertBtn) revertBtn.classList.toggle('hidden', !locked);
+
+  ['gen-start', 'gen-end', 'gen-list-dates', 'gen-run'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = locked;
+  });
+}
+/** 引き戻しにより解除された過去の確定内容（作成履歴）を一覧表示する */
+function renderGenLog() {
+  const el = document.getElementById('gen-log');
+  if (!el) return;
+  if (!genLog.length) {
+    el.innerHTML = '';
+    return;
+  }
+  const rows = genLog
+    .slice()
+    .reverse()
+    .map((l) => {
+      const confirmedAt = l.confirmedAt ? new Date(l.confirmedAt).toLocaleString('ja-JP') : '';
+      const revokedAt = l.revokedAt ? new Date(l.revokedAt).toLocaleString('ja-JP') : '';
+      return `
+    <tr>
+      <td>${escapeHtml(confirmedAt)}</td>
+      <td>${escapeHtml(revokedAt)}</td>
+      <td>${l.results.length} 日分</td>
+      <td><button class="btn-secondary gen-log-export" data-batch="${escapeHtml(l.confirmBatchId || '')}">CSVで書き出す</button></td>
+    </tr>`;
+    })
+    .join('');
+  el.innerHTML = `
+    <h3 style="margin-top:18px">作成履歴（引き戻し前の確定内容）</h3>
+    <p class="hint">「引き戻して修正」により解除された、この処理期の過去の確定内容です。件数はその時点で確定していた日数を示します。</p>
+    <div class="table-wrap small-table">
+      <table>
+        <thead><tr><th>決裁・確定日時</th><th>引き戻し日時</th><th>件数</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  el.querySelectorAll('.gen-log-export').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const log = genLog.find((l) => l.confirmBatchId === btn.dataset.batch);
+      if (!log) return;
+      const rows = [['日付', '曜日', '祝日等', '係長級', '主事級', '状態']].concat(
+        log.results.map((r) => [r.date, WEEKDAY_LABEL[r.weekday], r.holidayName || '', r.seniorName, r.juniorName, statusLabel(r.status)])
+      );
+      const stamp = log.confirmedAt ? log.confirmedAt.slice(0, 10) : '';
+      downloadCsv(`日直勤務表_引き戻し前_${stamp}.csv`, rows);
+    });
+  });
+}
+/** 処理期の期間を勤務表作成タブの入力欄へ反映し、その処理期に保存済みの作業状態（作成中／確定済み）を復元する */
 function applyPeriodToGenerateTab() {
   const p = currentPeriod();
   document.getElementById('gen-start').value = p.startDate;
   document.getElementById('gen-end').value = p.endDate;
   const label = document.getElementById('gen-period-label');
   if (label) label.textContent = p.label;
-  draftDates = [];
-  draftResults = [];
-  genDatesEmptyReason = null;
+  loadGenSessionForCurrentPeriod();
   renderGenDatesTable();
   renderGenResultTable();
+  renderGenLog();
 }
 
 /* ------------------------------------------------------------
@@ -2322,6 +2528,7 @@ const BACKUP_KEYS = {
   staffIdMap: KEY_STAFF_ID_MAP,
   periodStaff: KEY_PERIOD_STAFF,
   periodImportExcluded: KEY_IMPORT_EXCLUDED,
+  genSessions: KEY_GEN_SESSION,
   historyStaff: KEY_HISTORY_STAFF,
   monthRules: KEY_MONTH_RULES,
   fiscalEvents: KEY_FISCAL_EVENTS,

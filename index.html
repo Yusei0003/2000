@@ -311,6 +311,7 @@
 
     <div class="card">
       <h2>2. 勤務表を作成</h2>
+      <div id="gen-confirmed-banner" class="gen-confirmed-banner hidden"></div>
       <button id="gen-run" class="btn-primary">勤務表を作成する</button>
       <p class="hint">既存の履歴（前回・前々回の勤務、120日ルール、ペア重複、資格要件等）を踏まえて自動で割り当てます。「要確認」の日は候補者不足や制約の緩和など、手動での見直しが必要です。1日2名のうち少なくとも1名が係長級であればよいため、<strong>係長級2名の組合せ</strong>になることもあります（その場合、課長補佐・副主幹どうしの組合せは避けます）。人数不足でどうしても2名の枠を埋められない日は、状態欄に赤色で<strong>「エラー」</strong>と表示されます（それでも可能な限り、対象者を自動で最大限割り当てます）。各欄の名前の札はドラッグして、別の日・別の欄の職員と入れ替えられます（プルダウンでの変更もそのまま使えます）。</p>
       <div id="gen-warning-summary"></div>
@@ -322,11 +323,18 @@
       </div>
       <div id="gen-unassigned-summary" class="hint"></div>
       <div id="gen-overburdened-summary" class="hint"></div>
+      <div id="gen-approval-note" class="gen-notice-box">勤務表の内容を確認・決裁してから確定してください。</div>
+      <label id="gen-approval-checkbox-wrap" class="checkbox-label">
+        <input type="checkbox" id="gen-approval-check">
+        決裁が完了したことを確認しました（確定するには必須です）
+      </label>
       <div class="row-actions">
         <button id="gen-confirm" class="btn-primary" disabled>この内容で確定・履歴に保存</button>
+        <button id="gen-revert" class="btn-danger hidden">引き戻して修正</button>
         <button id="gen-export" class="btn-secondary" disabled>CSVで書き出す</button>
         <button id="gen-pdf" class="btn-secondary" disabled>PDFで書き出す</button>
       </div>
+      <div id="gen-log"></div>
     </div>
   </section>
 
