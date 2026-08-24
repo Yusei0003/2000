@@ -1436,6 +1436,7 @@ function initLeaveForm() {
   document.getElementById('leave-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const staffNumber = document.getElementById('lv-number').value.trim();
+    const category = document.getElementById('lv-category').value.trim();
     const startDate = document.getElementById('lv-start').value;
     const endDate = document.getElementById('lv-end').value || null;
     if (!staffNumber || !startDate) return;
@@ -1447,11 +1448,11 @@ function initLeaveForm() {
       alert('終了日は開始日以降の日付にしてください。');
       return;
     }
-    leaves.push({ id: uid('lv'), staffNumber, startDate, endDate, category: '', importedName: '' });
+    leaves.push({ id: uid('lv'), staffNumber, startDate, endDate, category, importedName: '' });
     save(KEY_LEAVES, leaves);
     renderLeaveTable();
     e.target.reset();
-    showToast('育休等の除外期間を登録しました');
+    showToast('除外期間を登録しました');
   });
 }
 

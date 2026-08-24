@@ -185,10 +185,10 @@
 
     <div class="card">
       <div class="card-header-row">
-        <h2>育休・産休等による除外期間</h2>
+        <h2>育休・産休・病気休暇等による除外期間</h2>
         <span id="leave-count" class="muted"></span>
       </div>
-      <p class="hint">育児休業・産前産後休暇等で日直ができない期間です。登録期間中の日は自動的に対象外になります。同じ職員・同じ期間の行は自動的にスキップされます。また、名簿にない職員番号（会計年度任用職員等）は登録できません。一覧には選択中の処理期に関係する（期間が重なる）職員のみ表示されます。</p>
+      <p class="hint">育児休業・産前産後休暇・病気休暇や個人的な事情など、日直ができない期間です。登録期間中の日は自動的に対象外になります。同じ職員・同じ期間の行は自動的にスキップされます。また、名簿にない職員番号（会計年度任用職員等）は登録できません。一覧には選択中の処理期に関係する（期間が重なる）職員のみ表示されます。</p>
       <label>育休Excelの取込
         <input type="file" id="leave-xlsx-input" accept=".xlsx">
       </label>
@@ -197,9 +197,10 @@
         <input type="file" id="maternity-xlsx-input" accept=".xlsx">
       </label>
       <p class="hint"><strong>出力方法：</strong>人事給与システムの「出産情報」で、検索条件１に「該当年の1/1（例：2026-1-1）」、条件１に「&gt;=」、対象１に「産前休暇」を指定して検索。結果を Ctrl+A で全選択して任意のExcelファイルに貼り付け、そのExcelを取り込む。</p>
-      <p class="hint" style="margin-top:14px">個別に追加する場合は以下から登録してください（終了日が未定の場合は空欄のままで登録できます）。名簿にない職員番号は登録できません。</p>
+      <p class="hint" style="margin-top:14px">病気休暇や個人的な事情で日直ができない職員も含め、個別に追加する場合は以下から登録してください（終了日が未定の場合は空欄のままで登録できます）。名簿にない職員番号は登録できません。</p>
       <form id="leave-form" class="grid-form">
         <label>職員番号<input type="text" id="lv-number" required placeholder="例：1023"></label>
+        <label>区分（任意）<input type="text" id="lv-category" placeholder="例：病気休暇、個人的事情"></label>
         <label>開始日<input type="date" id="lv-start" required></label>
         <label>終了日（未定なら空欄）<input type="date" id="lv-end"></label>
         <button type="submit" class="btn-primary">登録する</button>
