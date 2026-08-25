@@ -372,11 +372,13 @@
             <select id="history-period-filter"></select>
           </label>
           <span id="history-count" class="muted"></span>
+          <button id="history-bulk-delete-btn" class="btn-danger">表示中の履歴を一括削除</button>
           <button id="history-export-btn" class="btn-secondary">CSV書出</button>
           <button id="history-pdf-btn" class="btn-secondary">PDF書出</button>
           <button id="history-handover-btn" class="btn-secondary">引継ぎ用に書き出す</button>
         </div>
       </div>
+      <p class="hint">「表示中の履歴を一括削除」は、上の表示フィルタで絞り込まれている確定済み履歴をまとめて削除します（削除前に件数を表示して確認します）。この操作は元に戻せません。個別の日だけを削除したい場合は、各行の「削除」ボタンを使ってください。</p>
       <p class="hint">「交代を反映」は、確定済みの勤務表に対して変更届による交代を反映するための機能です。交代後の氏名と、変更届の申請日時を入力してください。グループウェア等の申請内容画面をコピーしてテキストエリアに貼り付けると、交代相手氏名・申請日時・変更する日付・申請者を自動で読み取り、入力欄に下書きします（貼り付けるだけで自動的に読み取ります。ボタンで再実行も可能）。変更申請のスクリーンショット画像をアップロードして読み取ることもできます。読み取った変更対象日がこの行の日付と異なる場合や、読み取った申請者が現在の担当者と異なる場合は警告が表示されます（読み取り結果は必ず確認し、必要なら修正してから「反映する」を押してください）。スクリーンショットの読み取りは <code>python3 -m http.server</code> 等でアプリを配信して開いている場合のみ使用できます（<code>index.html</code> を直接開いた場合は使用できません）。テキストの貼り付けによる読み取りと手入力は、どちらの開き方でもご利用いただけます。</p>
       <div class="table-wrap">
         <table>

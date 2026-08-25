@@ -2351,6 +2351,62 @@ function initHistoryPeriodFilter() {
     renderCheckTable();
   });
 }
+/** 表示フィルタで絞り込まれている確定済み履歴をまとめて削除する（別PC等で改修前に確定した
+ *  疑似データ等、1件ずつの削除では手間がかかる場合の一括削除用）。visibleHistory() と同じ
+ *  絞り込み条件を使うため、常に画面に表示されている件数と削除件数が一致する */
+function initHistoryBulkDelete() {
+  const btn = document.getElementById('history-bulk-delete-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    const rows = visibleHistory();
+    if (!rows.length) {
+      alert('削除対象の履歴がありません。');
+      return;
+    }
+    const scopeLabel =
+      historyPeriodFilter === 'all'
+        ? '全期間（すべての確定済み履歴）'
+        : historyPeriodFilter === 'unassigned'
+        ? '未分類'
+        : (periodById(historyPeriodFilter) || {}).label || '選択中の処理期';
+    if (!confirm(`「${scopeLabel}」に表示されている確定済み履歴 ${rows.length} 件をまとめて削除します。この操作は元に戻せません。よろしいですか？`)) {
+      return;
+    }
+    const removedBatchIds = new Set(rows.map((r) => r.confirmBatchId).filter(Boolean));
+    const removedPeriodIds = new Set(rows.map((r) => r.periodId).filter(Boolean));
+
+    history = history.filter((h) => !rows.includes(h));
+    save(KEY_HISTORY, history);
+
+    // 削除した履歴が、勤務表作成タブで「確定済み」として保持されているセッションのものだった場合、
+    // 実体のない確定表示が残らないよう、そのセッションも下書き状態へ戻す
+    removedPeriodIds.forEach((pid) => {
+      const s = genSessions[pid];
+      if (s && s.status === 'confirmed' && s.confirmBatchId && removedBatchIds.has(s.confirmBatchId)) {
+        genSessions[pid] = {
+          ...s,
+          status: 'draft',
+          confirmBatchId: null,
+          confirmedAt: null,
+          approvalChecked: false,
+          frozenUnassignedHtml: null,
+          frozenOverburdenedHtml: null,
+        };
+      }
+    });
+    save(KEY_GEN_SESSION, genSessions);
+    if (removedPeriodIds.has(currentPeriod().id)) {
+      loadGenSessionForCurrentPeriod();
+      renderGenDatesTable();
+      renderGenResultTable();
+      renderGenLog();
+    }
+
+    renderHistoryTable();
+    renderCheckTable();
+    showToast(`${rows.length} 件の履歴を削除しました`);
+  });
+}
 
 document.addEventListener('click', (e) => {
   if (e.target.id === 'history-export-btn') {
@@ -2975,6 +3031,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initGenerateDates();
   initGenerateRun();
   initHistoryPeriodFilter();
+  initHistoryBulkDelete();
   initLeaveXlsxImport();
   initMaternityXlsxImport();
   initPeriodBar();
