@@ -470,8 +470,10 @@ function generateAssignments({
     }
 
     // gender に null を渡すと性別を問わない。ignoreGap=true で最低間隔日数（120日）の判定を外す。
-    // どちらも人数不足時の最終手段でのみ使用する。
-    const eligibleBase = (level, gender, ignoreGap) =>
+    // ignoreElectionDuty=true で選挙管理委員会（併任）の除外を外す。
+    // いずれも人数不足時の最終手段でのみ使用する（選挙管理委員会の除外は、最低間隔日数を
+    // 緩和してもなお候補が1人もいない場合に限り、さらに緩和する最後の手段として使う）。
+    const eligibleBase = (level, gender, ignoreGap, ignoreElectionDuty) =>
       activeStaff.filter(
         (s) =>
           s.level === level &&
@@ -479,7 +481,7 @@ function generateAssignments({
           !isOnLeave(s, date, leaves) &&
           passesRetire(s, date, retireLeadMonths) &&
           ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
-          !(electionDutyExcludedToday && s.electionDuty) &&
+          (ignoreElectionDuty || !(electionDutyExcludedToday && s.electionDuty)) &&
           !bannedBySpecial.has(s.id) &&
           passesNewHire(s, date, newHireMonths) &&
           (ignoreGap || passesGap(s.id, date, minGapDays, lastDateMap))
@@ -548,28 +550,59 @@ function generateAssignments({
       let forcedFallbackUsed = false;
       let forcedNoSenior = false;
       let forcedIgnoredGap = false;
-      for (const ignoreGap of [false, true]) {
+      let forcedElectionDutyUsed = false;
+      // 最低間隔日数（ignoreGap）・選挙管理委員会（併任）の除外（ignoreElectionDuty）の緩和は、
+      // 「緩和が少ない順」に4通り試す。1名のみ（相方なし）の割当は、より緩和すれば2名の
+      // ペアが組める可能性があるため即採用せず、4通りすべてで2名のペアが組めなかった場合の
+      // 最終フォールバックとして最後にまとめて判定する（そうしないと、緩和の浅い段階でたまたま
+      // 1名しか見つからなかった場合に、それより緩和すれば見つかったはずの2名ペアを
+      // 試す前にあきらめてしまう）。
+      const combos = [
+        { ignoreGap: false, ignoreElectionDuty: false },
+        { ignoreGap: true, ignoreElectionDuty: false },
+        { ignoreGap: false, ignoreElectionDuty: true },
+        { ignoreGap: true, ignoreElectionDuty: true },
+      ];
+      let soloCandidate = null;
+      let soloIgnoreGap = false;
+      let soloIgnoreElectionDuty = false;
+      for (const { ignoreGap, ignoreElectionDuty } of combos) {
         if (pair) break;
-        const zSeniorPool = sortCandidates(eligibleBase('senior', gender, ignoreGap), countMap, lastDateMap);
-        const zJuniorPool = sortCandidates(eligibleBase('junior', gender, ignoreGap), countMap, lastDateMap);
+        const zSeniorPool = sortCandidates(eligibleBase('senior', gender, ignoreGap, ignoreElectionDuty), countMap, lastDateMap);
+        const zJuniorPool = sortCandidates(eligibleBase('junior', gender, ignoreGap, ignoreElectionDuty), countMap, lastDateMap);
         const zCombinedPool = sortByCountAndRecency(interleave(zSeniorPool, zJuniorPool), countMap, lastDateMap);
         if (zSeniorPool.length) {
           const anchor = zSeniorPool[0];
           const partner = zCombinedPool.find((p) => p.id !== anchor.id) || null;
-          pair = { senior: anchor, junior: partner };
-          forcedFallbackUsed = true;
+          if (partner) {
+            pair = { senior: anchor, junior: partner };
+            forcedFallbackUsed = true;
+            if (ignoreGap) forcedIgnoredGap = true;
+            if (ignoreElectionDuty) forcedElectionDutyUsed = true;
+          } else if (!soloCandidate) {
+            soloCandidate = anchor;
+            soloIgnoreGap = ignoreGap;
+            soloIgnoreElectionDuty = ignoreElectionDuty;
+          }
         } else if (zCombinedPool.length >= 2) {
           const anchor = zCombinedPool[0];
           const partner = zCombinedPool.find((p) => p.id !== anchor.id);
           pair = { senior: anchor, junior: partner }; // 係長級が1人もいない（最終手段）
           forcedFallbackUsed = true;
           forcedNoSenior = true;
-        } else if (zCombinedPool.length === 1) {
-          const solo = zCombinedPool[0];
-          pair = solo.level === 'senior' ? { senior: solo, junior: null } : { senior: null, junior: solo };
-          forcedFallbackUsed = true;
+          if (ignoreGap) forcedIgnoredGap = true;
+          if (ignoreElectionDuty) forcedElectionDutyUsed = true;
+        } else if (zCombinedPool.length === 1 && !soloCandidate) {
+          soloCandidate = zCombinedPool[0];
+          soloIgnoreGap = ignoreGap;
+          soloIgnoreElectionDuty = ignoreElectionDuty;
         }
-        if (pair && ignoreGap) forcedIgnoredGap = true;
+      }
+      if (!pair && soloCandidate) {
+        pair = soloCandidate.level === 'senior' ? { senior: soloCandidate, junior: null } : { senior: null, junior: soloCandidate };
+        forcedFallbackUsed = true;
+        if (soloIgnoreGap) forcedIgnoredGap = true;
+        if (soloIgnoreElectionDuty) forcedElectionDutyUsed = true;
       }
       // 最終手段で選んだペアは tryGender の repeat 判定を経ていないため、ここで改めて判定する
       // （最終手段で選んだ相手が今期割当済みでも「2回目の割当」の表示が欠落しないようにする）。
@@ -580,7 +613,7 @@ function generateAssignments({
           ((pair.senior && periodUsedIds.has(pair.senior.id)) || (pair.junior && periodUsedIds.has(pair.junior.id)))
         );
       }
-      return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap };
+      return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap, forcedElectionDutyUsed };
     };
 
     // 性別ゾーン方式：女性ゾーンでは「女性・今期未割当」のみをまず試す（＝境界は「その日に
@@ -596,7 +629,7 @@ function generateAssignments({
     if (zoneToday === 'F') {
       const freshF = tryGender('F', false);
       if (freshF.pair) {
-        outcome = { ...freshF, forcedFallbackUsed: false, forcedNoSenior: false, forcedIgnoredGap: false };
+        outcome = { ...freshF, forcedFallbackUsed: false, forcedNoSenior: false, forcedIgnoredGap: false, forcedElectionDutyUsed: false };
       } else {
         const maleFull = searchGenderFull('M', true);
         if (maleFull.pair) {
@@ -610,7 +643,7 @@ function generateAssignments({
       outcome = searchGenderFull('M', true);
     }
 
-    const { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap } = outcome;
+    const { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap, forcedElectionDutyUsed } = outcome;
     const usedGenderToday = pair ? (pair.senior ? pair.senior.gender : pair.junior.gender) : null;
     if (usedGenderToday === 'F') femaleUsedThisPeriod = true;
     if (zoneToday === 'M' && femaleUsedThisPeriod) genderZone = 'M';
@@ -624,11 +657,13 @@ function generateAssignments({
       reasons.push('対象者がいません（休暇・除外等により、この日に割当可能な職員が1人もいません）');
     } else if (assignedCount === 1) {
       reasons.push('人数不足のため1名のみの割当です（相方となる対象者がいません）');
+      if (forcedElectionDutyUsed) reasons.push('選挙管理委員会事務局（併任）の職員を人数不足のため特例的に割り当てました');
     } else if (forcedFallbackUsed) {
       if (repeat) reasons.push('同一処理期内で2回目の割当です');
       if (forcedNoSenior) reasons.push('係長級が含まれていません（人数不足のため）');
       if (forcedIgnoredGap) reasons.push(`前回勤務日から${minGapDays}日未満の職員を含みます（人数不足のため）`);
-      if (!repeat && !forcedNoSenior && !forcedIgnoredGap) {
+      if (forcedElectionDutyUsed) reasons.push('選挙管理委員会事務局（併任）の職員を人数不足のため特例的に割り当てました');
+      if (!repeat && !forcedNoSenior && !forcedIgnoredGap && !forcedElectionDutyUsed) {
         reasons.push('人数不足のため、通常のルールを緩和して割り当てました');
       }
     } else {
