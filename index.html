@@ -106,6 +106,7 @@
         </label>
         <p class="hint">外部組織へ派遣中の職員は「派遣（除外）」に、60歳以上で7割措置（再任用短時間等）の職員は「7割措置（除外）」にチェックすると、区分名に関係なく常に日直の対象から外れます。選挙管理委員会事務局を併任している職員は「選挙管理委員会（併任）」にチェックしてください（常時除外ではなく、行事管理タブで登録した選挙の告示日前後の期間のみ対象から外れます）。一覧は所属CD順に表示されます。日直のペアは同性で組み、まず女性を優先的に割り当てます。その日に割り当てられる未割当の女性が1人もいなくなった日から男性ゾーンへ一方向に切り替わり、以後その処理期では女性を割り当てません（男性の期間に女性が単発で混ざり交代しづらくなることを防ぐため）。性別が未設定の職員は割当対象になりません。</p>
 
+        <p class="hint" style="font-weight:600">「市民課経験」「派遣（除外）」「7割措置（除外）」「選挙管理委員会（併任）」のチェックは、Excel名簿の再取込時に前回処理期から職員番号単位で自動的に引き継がれます。異動や状況の変化がある場合があるため、取込後は内容をご確認ください。</p>
         <h3 id="staff-target-count">対象者リスト</h3>
         <div class="table-wrap">
           <table>
@@ -264,7 +265,7 @@
         <label>行事日（選挙の場合は告示日）<input type="date" id="ev-date" required></label>
         <label>除外リードタイム（日前から除外開始）<input type="number" id="ev-lead" value="30" min="0"></label>
         <label>除外開始日（自動計算・上書き可）<input type="date" id="ev-exclude-from"></label>
-        <label>除外を続ける日数（行事日の何日後まで）<input type="number" id="ev-after" value="15" min="0"></label>
+        <label>除外を続ける日数（行事日の何日後まで）<input type="number" id="ev-after" value="10" min="0"></label>
         <label>終了日（自動計算・上書き可）<input type="date" id="ev-end"></label>
         <button type="submit" class="btn-primary">追加する</button>
       </form>

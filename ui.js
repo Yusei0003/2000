@@ -1694,7 +1694,7 @@ function initEventForm() {
     renderEventTable();
     e.target.reset();
     document.getElementById('ev-lead').value = 30;
-    document.getElementById('ev-after').value = 15;
+    document.getElementById('ev-after').value = 10;
   });
 
   document.getElementById('ev-copy-prev').addEventListener('click', () => {
