@@ -104,13 +104,13 @@
         <label>職員検索（番号・氏名・所属・係名・職名で絞り込み）
           <input type="text" id="staff-search" placeholder="例：山田、総務課、派遣">
         </label>
-        <p class="hint">外部組織へ派遣中の職員は「派遣（除外）」に、60歳以上で7割措置（再任用短時間等）の職員は「7割措置（除外）」にチェックすると、区分名に関係なく常に日直の対象から外れます。一覧は所属CD順に表示されます。日直のペアは同性で組み、まず女性を優先的に割り当てます。その日に割り当てられる未割当の女性が1人もいなくなった日から男性ゾーンへ一方向に切り替わり、以後その処理期では女性を割り当てません（男性の期間に女性が単発で混ざり交代しづらくなることを防ぐため）。性別が未設定の職員は割当対象になりません。</p>
+        <p class="hint">外部組織へ派遣中の職員は「派遣（除外）」に、60歳以上で7割措置（再任用短時間等）の職員は「7割措置（除外）」にチェックすると、区分名に関係なく常に日直の対象から外れます。選挙管理委員会事務局を併任している職員は「選挙管理委員会（併任）」にチェックしてください（常時除外ではなく、行事管理タブで登録した選挙の告示日前後の期間のみ対象から外れます）。一覧は所属CD順に表示されます。日直のペアは同性で組み、まず女性を優先的に割り当てます。その日に割り当てられる未割当の女性が1人もいなくなった日から男性ゾーンへ一方向に切り替わり、以後その処理期では女性を割り当てません（男性の期間に女性が単発で混ざり交代しづらくなることを防ぐため）。性別が未設定の職員は割当対象になりません。</p>
 
         <h3 id="staff-target-count">対象者リスト</h3>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>身分</th><th>年齢</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>採用日</th><th>退職予定日</th><th></th></tr>
+              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>身分</th><th>年齢</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>選挙管理委員会（併任）</th><th>採用日</th><th>退職予定日</th><th></th></tr>
             </thead>
             <tbody id="staff-tbody-target"></tbody>
           </table>
@@ -121,7 +121,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>身分</th><th>年齢</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>除外理由</th><th>採用日</th><th>退職予定日</th><th></th></tr>
+              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>身分</th><th>年齢</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>選挙管理委員会（併任）</th><th>除外理由</th><th>採用日</th><th>退職予定日</th><th></th></tr>
             </thead>
             <tbody id="staff-tbody-excluded"></tbody>
           </table>
@@ -148,6 +148,7 @@
         <label>採用年月日（新規採用職員の6ヶ月除外に使用・任意）<input type="date" id="st-hire"></label>
         <label>退職予定日（任意）<input type="date" id="st-retire"></label>
         <label class="checkbox-label"><input type="checkbox" id="st-citizen"> 市民課経験あり（手動指定）</label>
+        <label class="checkbox-label"><input type="checkbox" id="st-election-duty"> 選挙管理委員会事務局を併任している</label>
         <label class="checkbox-label"><input type="checkbox" id="st-active" checked> 対象に含める（休職等の場合は外す）</label>
         <button type="submit" class="btn-primary">追加する</button>
       </form>
@@ -245,7 +246,7 @@
           <button id="ev-copy-prev" class="btn-secondary">前年度の行事をコピー</button>
         </div>
       </div>
-      <p class="hint">行事の日程は年度ごとに変わるため、年度を選んで登録します。日付を入力すると、リードタイム分をさかのぼった日から除外が始まります（終了日は行事日）。</p>
+      <p class="hint">行事の日程は年度ごとに変わるため、年度を選んで登録します。日付を入力すると、リードタイム分をさかのぼった日から除外が始まり（既定では終了日は行事日）、「除外を続ける日数」を入力するとその日数分だけ終了日が後ろにずれます。選挙の場合は行事日に告示日を入力し、除外を続ける日数に投票日・開票作業等を見込んだ日数を入力することで、告示日の前後を除外期間にできます。</p>
     </div>
 
     <div class="card">
@@ -260,15 +261,20 @@
             <option value="成人式"></option>
           </datalist>
         </label>
-        <label>行事日<input type="date" id="ev-date" required></label>
-        <label>終了日（複数日開催の場合のみ）<input type="date" id="ev-end"></label>
+        <label>行事日（選挙の場合は告示日）<input type="date" id="ev-date" required></label>
         <label>除外リードタイム（日前から除外開始）<input type="number" id="ev-lead" value="30" min="0"></label>
         <label>除外開始日（自動計算・上書き可）<input type="date" id="ev-exclude-from"></label>
+        <label>除外を続ける日数（行事日の何日後まで）<input type="number" id="ev-after" value="0" min="0"></label>
+        <label>終了日（自動計算・上書き可）<input type="date" id="ev-end"></label>
         <button type="submit" class="btn-primary">追加する</button>
       </form>
       <div class="grid-form" style="margin-top:4px">
         <label style="grid-column:1/-1">除外する所属（名簿から選択・複数可）
           <select id="ev-depts" multiple size="5"></select>
+        </label>
+        <label class="checkbox-label" style="grid-column:1/-1">
+          <input type="checkbox" id="ev-target-election">
+          選挙管理委員会事務局を併任している職員（名簿で「選挙管理委員会（併任）」にチェックした職員）も対象にする
         </label>
       </div>
     </div>
@@ -277,7 +283,7 @@
       <h2 id="ev-list-title">行事一覧</h2>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>行事名</th><th>行事日</th><th>除外開始日</th><th>除外する所属</th><th></th></tr></thead>
+          <thead><tr><th>行事名</th><th>行事日</th><th>除外開始日〜終了日</th><th>除外する所属</th><th>選挙管理委員会（併任）</th><th></th></tr></thead>
           <tbody id="event-tbody"></tbody>
         </table>
       </div>

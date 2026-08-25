@@ -447,13 +447,17 @@ function generateAssignments({
     const month = date.getMonth() + 1;
     const currentFY = fiscalYearOf(date);
     const excludedDepts = new Set();
+    let electionDutyExcludedToday = false;
     monthRules.forEach((r) => {
       if (r.months.includes(month)) r.depts.forEach((dep) => excludedDepts.add(dep));
     });
     eventExclusions.forEach((e) => {
       const start = parseISO(e.date);
       const end = parseISO(e.endDate || e.date);
-      if (date >= start && date <= end) e.depts.forEach((dep) => excludedDepts.add(dep));
+      if (date >= start && date <= end) {
+        (e.depts || []).forEach((dep) => excludedDepts.add(dep));
+        if (e.targetElectionDuty) electionDutyExcludedToday = true;
+      }
     });
 
     const special = detectSpecialPeriod(date);
@@ -475,6 +479,7 @@ function generateAssignments({
           !isOnLeave(s, date, leaves) &&
           passesRetire(s, date, retireLeadMonths) &&
           ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
+          !(electionDutyExcludedToday && s.electionDuty) &&
           !bannedBySpecial.has(s.id) &&
           passesNewHire(s, date, newHireMonths) &&
           (ignoreGap || passesGap(s.id, date, minGapDays, lastDateMap))
@@ -708,6 +713,7 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
   let blockedSpecial = 0;
   let blockedNewHire = 0;
   let blockedGap = 0;
+  let blockedElectionDuty = 0;
   let eligibleButNotChosen = 0;
   const deptLabels = new Set();
 
@@ -745,17 +751,25 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
 
     const month = date.getMonth() + 1;
     const excludedDepts = new Set();
+    let electionDutyExcludedToday = false;
     (monthRules || []).forEach((r) => {
       if (r.months.includes(month)) r.depts.forEach((dep) => excludedDepts.add(dep));
     });
     (eventExclusions || []).forEach((e) => {
       const start = parseISO(e.date);
       const end = parseISO(e.endDate || e.date);
-      if (date >= start && date <= end) e.depts.forEach((dep) => excludedDepts.add(dep));
+      if (date >= start && date <= end) {
+        (e.depts || []).forEach((dep) => excludedDepts.add(dep));
+        if (e.targetElectionDuty) electionDutyExcludedToday = true;
+      }
     });
     const deptHit = [...excludedDepts].find((dep) => staffMember.dept && staffMember.dept.includes(dep));
     if (deptHit) {
       deptLabels.add(deptHit);
+      return;
+    }
+    if (electionDutyExcludedToday && staffMember.electionDuty) {
+      blockedElectionDuty++;
       return;
     }
 
@@ -781,6 +795,7 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
   if (blockedRetire > 0) parts.push(`退職予定日の${retireLeadMonths}ヶ月前を過ぎているため対象外（${blockedRetire}日）`);
   if (blockedSpecial > 0) parts.push(`年末年始・GWの重複回避により対象外（前回・前々回の同期間の担当者のため・${blockedSpecial}日）`);
   if (deptLabels.size > 0) parts.push(`所属の除外ルールに該当（${[...deptLabels].join('・')}）`);
+  if (blockedElectionDuty > 0) parts.push(`選挙管理委員会事務局（併任）のため選挙関連の除外期間中（${blockedElectionDuty}日）`);
   if (blockedNewHire > 0) parts.push(`採用から${newHireMonths}ヶ月未満のため対象外（${blockedNewHire}日）`);
   if (blockedGap > 0) parts.push(`前回勤務日から${minGapDays}日未満のため対象外（${blockedGap}日）`);
   if (eligibleButNotChosen > 0) parts.push(`候補ではあったが、今期の割当枠が他の職員で埋まったため選ばれなかった（1人1回が基本のルールのため・${eligibleButNotChosen}日）`);

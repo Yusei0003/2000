@@ -724,6 +724,7 @@ function staffRowHtml(s, { showReason }) {
       </td>
       <td><input type="checkbox" class="dispatched-toggle" data-id="${s.id}" ${s.dispatched ? 'checked' : ''}></td>
       <td><input type="checkbox" class="seventy-toggle" data-id="${s.id}" ${s.seventyPercent ? 'checked' : ''}></td>
+      <td><input type="checkbox" class="election-duty-toggle" data-id="${s.id}" ${s.electionDuty ? 'checked' : ''}></td>
       ${showReason ? `<td>${escapeHtml(exclusionReason(s))}</td>` : ''}
       <td>${escapeHtml(s.hireDate || '')}</td>
       <td><input type="date" class="retire-input" data-id="${s.id}" value="${escapeHtml(s.retireDate || '')}"></td>
@@ -758,6 +759,14 @@ function attachStaffRowHandlers(tbody) {
     cb.addEventListener('change', () => {
       const s = staffById(cb.dataset.id);
       s.seventyPercent = cb.checked;
+      savePeriodStaff();
+      renderStaffTable();
+    });
+  });
+  tbody.querySelectorAll('.election-duty-toggle').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const s = staffById(cb.dataset.id);
+      s.electionDuty = cb.checked;
       savePeriodStaff();
       renderStaffTable();
     });
@@ -836,6 +845,7 @@ function initStaffForm() {
       citizenExp: document.getElementById('st-citizen').checked || !!(carry && carry.citizenExp),
       dispatched: !!(carry && carry.dispatched),
       seventyPercent: !!(carry && carry.seventyPercent),
+      electionDuty: document.getElementById('st-election-duty').checked || !!(carry && carry.electionDuty),
       active: document.getElementById('st-active').checked,
     };
     if (!rec.name || !rec.dept) return;
@@ -880,6 +890,7 @@ function initStaffForm() {
         citizenExp: /true|○|はい/i.test(citizenRaw || '') || !!(carry && carry.citizenExp),
         dispatched: !!(carry && carry.dispatched),
         seventyPercent: !!(carry && carry.seventyPercent),
+        electionDuty: !!(carry && carry.electionDuty),
         active: true,
       };
       staff.push(rec);
@@ -1158,6 +1169,7 @@ function initStaffXlsxImport() {
     let autoCitizen = 0;
     let carriedDispatched = 0;
     let carriedSeventy = 0;
+    let carriedElectionDuty = 0;
     const newStaff = [];
     const excludedRows = [];
     staffXlsxRows.forEach((r) => {
@@ -1188,6 +1200,8 @@ function initStaffXlsxImport() {
       if (dispatched) carriedDispatched++;
       const seventyPercent = !!(prev && prev.seventyPercent);
       if (seventyPercent) carriedSeventy++;
+      const electionDuty = !!(prev && prev.electionDuty);
+      if (electionDuty) carriedElectionDuty++;
       const deptHistory = prev ? [...(prev.deptHistory || [])] : [];
       if (prev && prev.dept && prev.dept !== r.dept && !deptHistory.includes(prev.dept)) deptHistory.push(prev.dept);
 
@@ -1208,6 +1222,7 @@ function initStaffXlsxImport() {
         citizenExp,
         dispatched,
         seventyPercent,
+        electionDuty,
         deptHistory,
         hireDate: r.hireDate,
         retireDate: r.retireDate || (prev && prev.retireDate) || null,
@@ -1231,6 +1246,7 @@ function initStaffXlsxImport() {
     if (carriedCitizen || autoCitizen) carryParts.push(`市民課経験${carriedCitizen + autoCitizen}名（現所属からの自動判定${autoCitizen}名を含む）`);
     if (carriedDispatched) carryParts.push(`派遣${carriedDispatched}名`);
     if (carriedSeventy) carryParts.push(`7割措置${carriedSeventy}名`);
+    if (carriedElectionDuty) carryParts.push(`選挙管理委員会（併任）${carriedElectionDuty}名`);
     document.getElementById('staff-xlsx-summary').textContent =
       `「${currentPeriod().label}」の名簿を ${imported} 件で置き換えました（対象外 ${skipped} 件・区分除外 ${skippedByCategory} 件）。` +
       (carryParts.length ? `前回処理期から ${carryParts.join('・')} を引き継ぎました。` : '');
@@ -1574,6 +1590,14 @@ function recalcExcludeFrom() {
   const from = addDays(parseISO(dateVal), -lead);
   document.getElementById('ev-exclude-from').value = toISO(from);
 }
+/** 除外を続ける日数（行事日の何日後まで）から終了日を自動計算する（既定0日で行事日当日まで） */
+function recalcEndDate() {
+  const dateVal = document.getElementById('ev-date').value;
+  const after = Number(document.getElementById('ev-after').value) || 0;
+  if (!dateVal) return;
+  const to = addDays(parseISO(dateVal), after);
+  document.getElementById('ev-end').value = toISO(to);
+}
 function renderEventTable() {
   document.getElementById('ev-list-title').textContent = `${currentEventYear}年度の行事一覧`;
   const tbody = document.getElementById('event-tbody');
@@ -1583,9 +1607,10 @@ function renderEventTable() {
       (e) => `
     <tr>
       <td>${escapeHtml(e.name || '')}</td>
-      <td>${escapeHtml(e.date || '')}${e.endDate && e.endDate !== e.date ? ' 〜 ' + escapeHtml(e.endDate) : ''}</td>
-      <td>${escapeHtml(e.excludeFrom || '')}</td>
+      <td>${escapeHtml(e.date || '')}</td>
+      <td>${escapeHtml(e.excludeFrom || '')}${e.endDate ? ' 〜 ' + escapeHtml(e.endDate) : ''}</td>
       <td>${(e.depts || []).map(escapeHtml).join('、')}</td>
+      <td>${e.targetElectionDuty ? '対象' : ''}</td>
       <td><button class="btn-danger" data-del="${e.id}">削除</button></td>
     </tr>`
     )
@@ -1611,16 +1636,17 @@ function renderPrevYearEventReference() {
   }
   el.innerHTML = `
     <table>
-      <thead><tr><th>行事名</th><th>行事日</th><th>除外開始日</th><th>除外する所属</th></tr></thead>
+      <thead><tr><th>行事名</th><th>行事日</th><th>除外開始日〜終了日</th><th>除外する所属</th><th>選挙管理委員会（併任）</th></tr></thead>
       <tbody>
         ${list
           .map(
             (e) => `
         <tr>
           <td>${escapeHtml(e.name || '')}</td>
-          <td>${escapeHtml(e.date || '')}${e.endDate && e.endDate !== e.date ? ' 〜 ' + escapeHtml(e.endDate) : ''}</td>
-          <td>${escapeHtml(e.excludeFrom || '')}</td>
+          <td>${escapeHtml(e.date || '')}</td>
+          <td>${escapeHtml(e.excludeFrom || '')}${e.endDate ? ' 〜 ' + escapeHtml(e.endDate) : ''}</td>
           <td>${(e.depts || []).map(escapeHtml).join('、')}</td>
+          <td>${e.targetElectionDuty ? '対象' : ''}</td>
         </tr>`
           )
           .join('')}
@@ -1635,17 +1661,21 @@ function initEventForm() {
 
   document.getElementById('ev-date').addEventListener('change', recalcExcludeFrom);
   document.getElementById('ev-lead').addEventListener('change', recalcExcludeFrom);
+  document.getElementById('ev-date').addEventListener('change', recalcEndDate);
+  document.getElementById('ev-after').addEventListener('change', recalcEndDate);
 
   document.getElementById('event-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const name = document.getElementById('ev-label').value.trim();
     const date = document.getElementById('ev-date').value;
+    const afterDays = Number(document.getElementById('ev-after').value) || 0;
     const endDate = document.getElementById('ev-end').value || date;
     const leadDays = Number(document.getElementById('ev-lead').value) || 0;
     const excludeFrom = document.getElementById('ev-exclude-from').value || date;
     const depts = [...document.getElementById('ev-depts').selectedOptions].map((o) => o.value);
-    if (!date || !depts.length) {
-      alert('行事日と除外する所属を入力してください');
+    const targetElectionDuty = document.getElementById('ev-target-election').checked;
+    if (!date || (!depts.length && !targetElectionDuty)) {
+      alert('行事日を入力し、除外する所属を選ぶか「選挙管理委員会事務局を併任している職員も対象にする」にチェックしてください');
       return;
     }
     fiscalEvents.push({
@@ -1656,12 +1686,15 @@ function initEventForm() {
       endDate,
       leadDays,
       excludeFrom,
+      afterDays,
       depts,
+      targetElectionDuty,
     });
     save(KEY_FISCAL_EVENTS, fiscalEvents);
     renderEventTable();
     e.target.reset();
     document.getElementById('ev-lead').value = 30;
+    document.getElementById('ev-after').value = 0;
   });
 
   document.getElementById('ev-copy-prev').addEventListener('click', () => {
@@ -1679,7 +1712,9 @@ function initEventForm() {
       endDate: '',
       leadDays: e.leadDays,
       excludeFrom: '',
+      afterDays: e.afterDays || 0,
       depts: e.depts,
+      targetElectionDuty: !!e.targetElectionDuty,
     }));
     fiscalEvents = fiscalEvents.concat(copied);
     save(KEY_FISCAL_EVENTS, fiscalEvents);
@@ -1687,11 +1722,13 @@ function initEventForm() {
     showToast(`${prevYear}年度から${copied.length}件の行事をコピーしました（日付は入力してください）`);
   });
 }
-/** 対象期間に適用する行事除外リストを組み立てる（generateAssignments渡し用） */
+/** 対象期間に適用する行事除外リストを組み立てる（generateAssignments渡し用）。
+ *  所属による除外（depts）と、選挙管理委員会事務局の併任者を対象にする除外（targetElectionDuty）は
+ *  併用できる（例：選挙管理委員会の所属自体は名簿上存在しないため、併任フラグ側で職員を特定する） */
 function computeEventExclusions() {
   return fiscalEvents
-    .filter((e) => e.excludeFrom && e.depts && e.depts.length)
-    .map((e) => ({ date: e.excludeFrom, endDate: e.endDate || e.date, depts: e.depts }));
+    .filter((e) => e.excludeFrom && ((e.depts && e.depts.length) || e.targetElectionDuty))
+    .map((e) => ({ date: e.excludeFrom, endDate: e.endDate || e.date, depts: e.depts || [], targetElectionDuty: !!e.targetElectionDuty }));
 }
 
 /* ------------------------------------------------------------
