@@ -1780,10 +1780,35 @@ function renderGenResultTable() {
       if (genStatus === 'confirmed') return;
       const idx = Number(sel.dataset.idx);
       const level = sel.dataset.level;
-      const s = staffById(sel.value) || null;
+      const newId = sel.value || null;
+      const s = newId ? staffById(newId) : null;
+
+      // プルダウンで選んだ職員が既に別の日・別の欄に割り当てられている場合、それが1箇所だけなら
+      // 「移動」とみなしてそちらをクリアする（クリアしないと元の割当が残ったまま二重に割り当てられ、
+      //  元の日は何も警告が出ないまま「2回目の割当」エラーだけが新しい日に出てしまう）。
+      // 2箇所以上に既に割り当て済み（人数不足で複数回割当済み）の場合は、どちらを元の場所として
+      // 消すべきか判断できないためクリアはせず、影響する行をすべて再判定して警告を正しく表示する。
+      const affectedIdxs = new Set([idx]);
+      if (newId) {
+        const otherOccurrences = [];
+        draftResults.forEach((r, i) => {
+          if (i === idx) return;
+          if (r.seniorId === newId) otherOccurrences.push({ i, idKey: 'seniorId', nameKey: 'seniorName' });
+          if (r.juniorId === newId) otherOccurrences.push({ i, idKey: 'juniorId', nameKey: 'juniorName' });
+        });
+        if (otherOccurrences.length === 1) {
+          const { i, idKey, nameKey } = otherOccurrences[0];
+          draftResults[i][idKey] = null;
+          draftResults[i][nameKey] = '';
+          affectedIdxs.add(i);
+        } else {
+          otherOccurrences.forEach(({ i }) => affectedIdxs.add(i));
+        }
+      }
+
       draftResults[idx][level + 'Id'] = s ? s.id : null;
       draftResults[idx][level + 'Name'] = s ? s.name : '';
-      revalidateDraftResult(idx);
+      affectedIdxs.forEach((i) => revalidateDraftResult(i));
       genApprovalChecked = false;
       saveGenSession();
       renderGenResultTable();
