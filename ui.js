@@ -18,6 +18,7 @@ const KEY_PERIOD_STAFF = 'duty_period_staff_v1'; // 処理期ID→職員名簿�
 const KEY_HISTORY_STAFF = 'duty_history_staff_v1'; // 勤務実績取込のみで登場する、どの処理期の名簿にもいない職員（表示名のみに使用）
 const KEY_IMPORT_EXCLUDED = 'duty_import_excluded_v1'; // 処理期ID→Excel名簿取込時に除外された行の一覧（CSV書出用）
 const KEY_GEN_SESSION = 'duty_gen_session_v1'; // 処理期ID→勤務表作成タブの作業状態（決裁・確定・引き戻し履歴を含む）
+const KEY_CHANGE_LOG = 'duty_change_log_v1'; // 「交代を反映」の履歴（変更前後の職員を記録。交換ペアの検出に使用）
 
 const DEFAULT_SETTINGS = {
   minGapDays: 120,
@@ -261,6 +262,7 @@ let periodStaff = load(KEY_PERIOD_STAFF, {}); // 処理期ID -> 職員名簿配�
 let periodImportExcluded = load(KEY_IMPORT_EXCLUDED, {}); // 処理期ID -> Excel名簿取込時に除外された行の一覧
 let genSessions = load(KEY_GEN_SESSION, {}); // 処理期ID -> 勤務表作成タブの作業状態
 let historyStaffStubs = load(KEY_HISTORY_STAFF, []); // どの処理期の名簿にもいない、勤務実績のみの職員
+let changeLog = load(KEY_CHANGE_LOG, []); // 「交代を反映」のたびに変更前後の職員を記録する（交換ペアの検出用）
 
 /** 職員番号に対応する恒久的な職員IDを返す（無ければ新規発行して記憶する） */
 function idForNumber(number) {
@@ -2450,10 +2452,55 @@ function renderHistoryPeriodFilter() {
       .map((p) => `<option value="${p.id}" ${historyPeriodFilter === p.id ? 'selected' : ''}>${escapeHtml(p.label)}</option>`)
       .join('');
 }
+/** 「交代を反映」で職員同士が入れ替わった（AさんからBさんへ、別の日にBさんからAさんへ）ペアを
+ *  検出し、それぞれに同じ色を割り当てる。同じ日・同じ欄（係長級／主事級）に複数回変更が
+ *  入っている場合は、最新の変更のみを現在有効な変更として扱う。
+ *  戻り値は Map<"日付|欄", 色> 。 */
+const SWAP_MARKER_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42b0b0', '#c2185b', '#7cb342', '#0277bd', '#f9a825'];
+function computeSwapMarkers() {
+  const existingDates = new Set(history.map((h) => h.date));
+  const latestByKey = new Map();
+  changeLog.forEach((log) => {
+    if (!existingDates.has(log.date)) return; // 該当日の履歴が削除済みの変更ログは対象外
+    const key = log.date + '|' + log.level;
+    const existing = latestByKey.get(key);
+    if (!existing || log.loggedAt > existing.loggedAt) latestByKey.set(key, log);
+  });
+  const entries = [...latestByKey.entries()];
+  const markers = new Map(); // key(date|level) -> { color, partnerName }
+  const used = new Set();
+  let colorIdx = 0;
+  for (let i = 0; i < entries.length; i++) {
+    const [keyA, logA] = entries[i];
+    if (used.has(keyA) || !logA.fromId || !logA.toId) continue;
+    for (let j = i + 1; j < entries.length; j++) {
+      const [keyB, logB] = entries[j];
+      if (used.has(keyB) || !logB.fromId || !logB.toId) continue;
+      if (logA.fromId === logB.toId && logA.toId === logB.fromId) {
+        const color = SWAP_MARKER_COLORS[colorIdx % SWAP_MARKER_COLORS.length];
+        colorIdx++;
+        markers.set(keyA, { color, partnerName: logB.toName, partnerDate: logB.date });
+        markers.set(keyB, { color, partnerName: logA.toName, partnerDate: logA.date });
+        used.add(keyA);
+        used.add(keyB);
+        break;
+      }
+    }
+  }
+  return markers;
+}
+/** 交換ペアの色マーカー（丸印）のHTML。対象でなければ空文字を返す。 */
+function swapMarkerHtml(date, level, markers) {
+  const info = markers.get(date + '|' + level);
+  if (!info) return '';
+  const title = `${escapeHtml(info.partnerName)}さん（${escapeHtml(info.partnerDate)}）と交代（入れ替え）`;
+  return `<span class="swap-marker" style="background:${info.color}" title="${title}"></span>`;
+}
 function renderHistoryTable() {
   const tbody = document.getElementById('history-tbody');
   renderHistoryPeriodFilter();
   const rows = visibleHistory();
+  const swapMarkers = computeSwapMarkers();
   tbody.innerHTML = rows
     .map(
       (r) => `
@@ -2461,9 +2508,9 @@ function renderHistoryTable() {
       <td>${escapeHtml(r.periodLabel || '')}</td>
       <td>${r.date}</td>
       <td>${WEEKDAY_LABEL[r.weekday]}</td>
-      <td>${escapeHtml(r.seniorName)}<div class="row-actions"><button class="btn-secondary change-btn" data-date="${r.date}" data-level="senior">交代を反映</button></div></td>
+      <td>${swapMarkerHtml(r.date, 'senior', swapMarkers)}${escapeHtml(r.seniorName)}<div class="row-actions"><button class="btn-secondary change-btn" data-date="${r.date}" data-level="senior">交代を反映</button></div></td>
       <td>${escapeHtml(r.seniorChangedAt || '')}</td>
-      <td>${escapeHtml(r.juniorName)}<div class="row-actions"><button class="btn-secondary change-btn" data-date="${r.date}" data-level="junior">交代を反映</button></div></td>
+      <td>${swapMarkerHtml(r.date, 'junior', swapMarkers)}${escapeHtml(r.juniorName)}<div class="row-actions"><button class="btn-secondary change-btn" data-date="${r.date}" data-level="junior">交代を反映</button></div></td>
       <td>${escapeHtml(r.juniorChangedAt || '')}</td>
       <td>${statusLabel(r.status)}</td>
       <td><button class="btn-danger" data-del="${r.date}" data-date="${r.date}">削除</button></td>
@@ -2722,6 +2769,20 @@ function openChangeModal(date, level) {
     }
     const newStaff = staffById(newId);
     const appliedAt = appliedAtRaw.replace('T', ' ');
+    const fromId = level === 'senior' ? record.seniorId : record.juniorId;
+    const fromName = level === 'senior' ? record.seniorName : record.juniorName;
+    changeLog.push({
+      id: uid('chg'),
+      date,
+      level,
+      fromId: fromId || null,
+      fromName: fromName || '',
+      toId: newStaff.id,
+      toName: newStaff.name,
+      appliedAt,
+      loggedAt: new Date().toISOString(),
+    });
+    save(KEY_CHANGE_LOG, changeLog);
     if (level === 'senior') {
       record.seniorId = newStaff.id;
       record.seniorName = newStaff.name;
@@ -2763,6 +2824,7 @@ const BACKUP_KEYS = {
   leaves: KEY_LEAVES,
   periods: KEY_PERIODS,
   currentPeriodId: KEY_CURRENT_PERIOD,
+  changeLog: KEY_CHANGE_LOG,
 };
 function initBackup() {
   document.getElementById('backup-export-btn').addEventListener('click', () => {
@@ -2861,6 +2923,7 @@ function initHandoverExport() {
  * ------------------------------------------------------------ */
 /** PDF用の印刷シート要素を1枚作る。見出し欄は「氏名」で統一する（係長級・主事級の別は表示しない）。 */
 function buildPrintSheetEl(headingHtml, rows) {
+  const swapMarkers = computeSwapMarkers();
   const sheet = document.createElement('div');
   sheet.className = 'print-sheet';
   sheet.innerHTML = `
@@ -2875,9 +2938,9 @@ function buildPrintSheetEl(headingHtml, rows) {
                   (r) => `<tr>
               <td>${r.date}</td>
               <td>${WEEKDAY_LABEL[r.weekday]}</td>
-              <td>${escapeHtml(r.seniorName || '')}</td>
+              <td>${swapMarkerHtml(r.date, 'senior', swapMarkers)}${escapeHtml(r.seniorName || '')}</td>
               <td>${escapeHtml(r.seniorChangedAt || '')}</td>
-              <td>${escapeHtml(r.juniorName || '')}</td>
+              <td>${swapMarkerHtml(r.date, 'junior', swapMarkers)}${escapeHtml(r.juniorName || '')}</td>
               <td>${escapeHtml(r.juniorChangedAt || '')}</td>
             </tr>`
                 )
@@ -2998,11 +3061,23 @@ function exportPeriodPdfByQuarter(period, rows, filename) {
     alert('出力する内容がありません');
     return;
   }
-  const midISO = toISO(addMonths(parseISO(period.startDate), 3));
-  const quarters = [
-    { label: period.half === 'H1' ? '4月〜6月' : '10月〜12月', rows: rows.filter((r) => r.date < midISO) },
-    { label: period.half === 'H1' ? '7月〜9月' : '1月〜3月', rows: rows.filter((r) => r.date >= midISO) },
-  ];
+  // ページの境界は period.startDate から3ヶ月後の日付ではなく、各行の実際の月（暦月）で
+  // 判定する。startDateがちょうど月初でない場合（対象期間を手動で変更した場合等）でも、
+  // ページの見出し（4月〜6月等）と実際に載る行の月が必ず一致するようにするため。
+  const quarterDefs =
+    period.half === 'H1'
+      ? [
+          { label: '4月〜6月', months: [4, 5, 6] },
+          { label: '7月〜9月', months: [7, 8, 9] },
+        ]
+      : [
+          { label: '10月〜12月', months: [10, 11, 12] },
+          { label: '1月〜3月', months: [1, 2, 3] },
+        ];
+  const quarters = quarterDefs.map((qd) => ({
+    label: qd.label,
+    rows: rows.filter((r) => qd.months.includes(parseISO(r.date).getMonth() + 1)),
+  }));
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
   const margin = 24;

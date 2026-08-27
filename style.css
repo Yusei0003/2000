@@ -230,6 +230,18 @@ textarea {
  * 文字色（muted）を引き継ぐだけなので、ここでは文字色も本文色に上書きする。 */
 .hint-do { color: var(--text); font-weight: 700; }
 
+/* 「交代を反映」で入れ替わった職員同士（交換ペア）を示す色付きマーカー。
+ * 同じ色が付いた2件は、互いに担当を交代したペアであることを表す。 */
+.swap-marker {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+
 .table-wrap {
   overflow-x: auto;
   overflow-y: auto;
