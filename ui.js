@@ -2697,10 +2697,25 @@ function runChangeTextPaste(text, targetDate, candidates, currentName, statusEl)
   const messages = applyChangeDraftFromText(text, targetDate, candidates, currentName);
   if (statusEl) statusEl.innerHTML = messages.map((m) => escapeHtml(m)).join('<br>') + '<br>内容を確認のうえ「反映する」を押してください。';
 }
+/** 指定した職員が、同じ処理期内の他の日に割り当てられている箇所（係長級・主事級を問わない）を
+ *  すべて返す。「交代を反映」で選んだ交代相手が別の日にも担当予定の場合、その日をあわせて
+ *  交換できるようにするための候補探索に使う（変更届のOCR任せで2日分を読み取ろうとすると
+ *  誤読・不一致警告が出やすいため、名簿データから直接引く）。 */
+function findOtherAssignments(staffId, periodId, excludeDate) {
+  return history
+    .filter((h) => h.periodId === periodId && h.date !== excludeDate && (h.seniorId === staffId || h.juniorId === staffId))
+    .map((h) => ({
+      date: h.date,
+      weekday: h.weekday,
+      level: h.seniorId === staffId ? 'senior' : 'junior',
+    }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
 function openChangeModal(date, level) {
   const record = history.find((r) => r.date === date);
   if (!record) return;
   const currentName = level === 'senior' ? record.seniorName : record.juniorName;
+  const currentId = level === 'senior' ? record.seniorId : record.juniorId;
   const candidates = staff.filter((s) => s.level === level && s.active !== false);
   const options = candidates
     .map((s) => `<option value="${s.id}">${escapeHtml(s.name)}（${escapeHtml(s.dept)}）</option>`)
@@ -2737,6 +2752,12 @@ function openChangeModal(date, level) {
             <input type="datetime-local" id="change-applied-at">
           </label>
         </div>
+        <div id="change-swap-section" class="hidden">
+          <label>交代後の職員は、同じ処理期の他の日にも担当予定があります。あわせて交換しますか？
+            <select id="change-swap-target"></select>
+          </label>
+          <p class="hint">選んだ日の担当を、この行の元の担当者（${escapeHtml(currentName || '未定')}）に交代します。1回の操作で両方の変更が反映されます。</p>
+        </div>
         <div class="row-actions">
           <button id="change-confirm" class="btn-primary">反映する</button>
           <button id="change-cancel" class="btn-secondary">閉じる</button>
@@ -2760,6 +2781,28 @@ function openChangeModal(date, level) {
   const runFromPastedText = () => runChangeTextPaste(textInput.value, date, candidates, currentName, textStatus);
   document.getElementById('change-text-parse-btn').addEventListener('click', runFromPastedText);
   textInput.addEventListener('paste', () => { setTimeout(runFromPastedText, 0); });
+
+  const swapSection = document.getElementById('change-swap-section');
+  const swapTargetSelect = document.getElementById('change-swap-target');
+  document.getElementById('change-new-staff').addEventListener('change', (e) => {
+    const newId = e.target.value;
+    if (!newId || !currentId) {
+      swapSection.classList.add('hidden');
+      return;
+    }
+    const others = findOtherAssignments(newId, record.periodId, date);
+    if (!others.length) {
+      swapSection.classList.add('hidden');
+      return;
+    }
+    swapTargetSelect.innerHTML =
+      '<option value="">交換しない（この日だけ変更する）</option>' +
+      others
+        .map((o) => `<option value="${o.date}|${o.level}">${o.date}（${WEEKDAY_LABEL[o.weekday]}・${LEVEL_LABEL[o.level]}）</option>`)
+        .join('');
+    swapSection.classList.remove('hidden');
+  });
+
   document.getElementById('change-confirm').addEventListener('click', () => {
     const newId = document.getElementById('change-new-staff').value;
     const appliedAtRaw = document.getElementById('change-applied-at').value;
@@ -2782,7 +2825,6 @@ function openChangeModal(date, level) {
       appliedAt,
       loggedAt: new Date().toISOString(),
     });
-    save(KEY_CHANGE_LOG, changeLog);
     if (level === 'senior') {
       record.seniorId = newStaff.id;
       record.seniorName = newStaff.name;
@@ -2793,11 +2835,44 @@ function openChangeModal(date, level) {
       record.juniorChangedAt = appliedAt;
     }
     record.manuallyEdited = true;
+
+    const swapValue = swapTargetSelect && !swapSection.classList.contains('hidden') ? swapTargetSelect.value : '';
+    let swapApplied = false;
+    if (swapValue && fromId) {
+      const [swapDate, swapLevel] = swapValue.split('|');
+      const swapRecord = history.find((h) => h.date === swapDate);
+      if (swapRecord) {
+        changeLog.push({
+          id: uid('chg'),
+          date: swapDate,
+          level: swapLevel,
+          fromId: newStaff.id,
+          fromName: newStaff.name,
+          toId: fromId,
+          toName: fromName,
+          appliedAt,
+          loggedAt: new Date().toISOString(),
+        });
+        if (swapLevel === 'senior') {
+          swapRecord.seniorId = fromId;
+          swapRecord.seniorName = fromName;
+          swapRecord.seniorChangedAt = appliedAt;
+        } else {
+          swapRecord.juniorId = fromId;
+          swapRecord.juniorName = fromName;
+          swapRecord.juniorChangedAt = appliedAt;
+        }
+        swapRecord.manuallyEdited = true;
+        swapApplied = true;
+      }
+    }
+
+    save(KEY_CHANGE_LOG, changeLog);
     save(KEY_HISTORY, history);
     closeChangeModal();
     renderHistoryTable();
     renderCheckTable();
-    showToast('交代を反映しました');
+    showToast(swapApplied ? '交代を反映しました（交換として2件の日付に反映）' : '交代を反映しました');
   });
 }
 function closeChangeModal() {
