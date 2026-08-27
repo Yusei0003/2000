@@ -645,6 +645,15 @@ function initDocsTab() {
   });
 }
 
+function initHelpToggle() {
+  const btn = document.getElementById('help-other-toggle');
+  const content = document.getElementById('help-other-content');
+  btn.addEventListener('click', () => {
+    content.classList.toggle('hidden');
+    btn.textContent = content.classList.contains('hidden') ? 'その他使い方を表示する' : 'その他使い方を隠す';
+  });
+}
+
 /* ------------------------------------------------------------
  * 名簿管理
  * ------------------------------------------------------------ */
@@ -3073,6 +3082,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initMaternityXlsxImport();
   initPeriodBar();
   initDocsTab();
+  initHelpToggle();
 
   renderStaffTable();
   renderMonthRuleTable();
