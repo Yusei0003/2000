@@ -33,6 +33,85 @@ const DEFAULT_MONTH_RULES = [
   { id: 'default-3', months: [1, 2, 3, 4], depts: ['税務課'], note: '' },
 ];
 
+/** 職名からランク値を引くための対応表（値が低いほど役職が上）。ランクが読み取れない
+ *  職員の補完、および既存名簿（rank未保存）の移行に使う。取込対象外の職名も含む。 */
+const RANK_BY_TITLE = {
+  市長: 10,
+  副市長: 20,
+  教育長: 30,
+  部長: 200,
+  次長: 200,
+  局長: 200,
+  消防長: 200,
+  参事: 200,
+  課長: 300,
+  所長: 300,
+  会計管理者: 300,
+  室長: 310,
+  主幹: 320,
+  課長補佐: 400,
+  室長補佐: 400,
+  消防司令: 400,
+  局長補佐: 400,
+  副主幹: 420,
+  秘書係長: 500,
+  脱炭素推進係長: 500,
+  政策広報係長: 500,
+  財政係長: 500,
+  母子保健係長: 500,
+  健康推進係長: 500,
+  福祉係長: 500,
+  地域包括支援センター係長: 500,
+  子ども家庭係長: 500,
+  コミュニティ係長: 500,
+  市民係長: 500,
+  市民税係長: 500,
+  資産税係長: 500,
+  観光係長: 500,
+  商工ブランド係長: 500,
+  農政係長: 500,
+  林政係長: 500,
+  水産係長: 500,
+  漁港係長: 500,
+  道路河川係長: 500,
+  住宅政策係長: 500,
+  都市計画係長: 500,
+  経理係長: 500,
+  消防司令補: 500,
+  '生涯学習・芸術係長': 500,
+  文化財係長: 500,
+  選挙係長: 500,
+  主査: 520,
+  主任: 530,
+  主任保健師: 530,
+  主任栄養士: 530,
+  主任保育士: 530,
+  主任調理員: 530,
+  消防士長: 530,
+  主任学芸員: 530,
+  主任用務員: 530,
+  主任主事: 600,
+  主任技師: 600,
+  消防副士長: 600,
+  主事: 700,
+  栄養士: 700,
+  保健師: 700,
+  看護師: 700,
+  技師: 700,
+  消防士: 700,
+  指導主事: 700,
+  用務員: 700,
+  書記: 700,
+  主事補: 800,
+};
+/** Excel取込行のランク値を決める。ランク列が数値として読めればそれを使い、
+ *  読めない場合のみ職名からランク対応表で補完する（両方だめならnull＝不明）。 */
+function rankForImportRow(r) {
+  if (r.rank !== null && r.rank !== undefined && !isNaN(r.rank)) return Number(r.rank);
+  const byTitle = RANK_BY_TITLE[r.title];
+  return byTitle !== undefined ? byTitle : null;
+}
+
 function load(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -348,6 +427,22 @@ function migrateToPerPeriodStaff() {
   save(KEY_HISTORY_STAFF, historyStaffStubs);
 }
 migrateToPerPeriodStaff();
+
+/** 既存の名簿（rank未保存）を、職名からランク対応表で補完する（再取込不要にするための一度きりの移行）。
+ *  職名がランク対応表にない場合（個別登録した職員など）はnull（不明）のままにする。 */
+function migrateStaffRanks() {
+  let changed = false;
+  Object.keys(periodStaff).forEach((pid) => {
+    (periodStaff[pid] || []).forEach((s) => {
+      if ((s.rank === null || s.rank === undefined) && s.title && RANK_BY_TITLE[s.title] !== undefined) {
+        s.rank = RANK_BY_TITLE[s.title];
+        changed = true;
+      }
+    });
+  });
+  if (changed) save(KEY_PERIOD_STAFF, periodStaff);
+}
+migrateStaffRanks();
 
 let staff = [];
 loadStaffForCurrentPeriod();
@@ -844,6 +939,7 @@ function initStaffForm() {
       name: document.getElementById('st-name').value.trim(),
       level: document.getElementById('st-level').value,
       gender: null,
+      rank: (carry && carry.rank) || RANK_BY_TITLE[document.getElementById('st-title').value.trim()] || null,
       title: document.getElementById('st-title').value.trim(),
       dept: document.getElementById('st-dept').value.trim(),
       section: document.getElementById('st-section').value.trim(),
@@ -889,6 +985,7 @@ function initStaffForm() {
         number: num,
         name: name.trim(),
         level,
+        rank: (carry && carry.rank) || null,
         title: '',
         dept: dept.trim(),
         section: '',
@@ -1219,6 +1316,7 @@ function initStaffXlsxImport() {
         number: r.number,
         name: r.name,
         level,
+        rank: rankForImportRow(r),
         title: r.title,
         dept: r.dept,
         deptCode: r.deptCode,
@@ -2457,7 +2555,7 @@ function initHistoryBulkDelete() {
 document.addEventListener('click', (e) => {
   if (e.target.id === 'history-export-btn') {
     const rows = [['期間', '日付', '曜日', '係長級', '変更日時', '主事級', '変更日時', '状態']].concat(
-      history.map((r) => [
+      visibleHistory().map((r) => [
         r.periodLabel || '',
         r.date,
         WEEKDAY_LABEL[r.weekday],
@@ -2790,7 +2888,34 @@ function buildPrintSheetEl(headingHtml, rows) {
     </table>`;
   return sheet;
 }
-/** 1枚の印刷シートを画像化し、PDFのページとして追加する（1ページに収まらない場合は続けてページを追加する）。 */
+/** .print-sheet の固定幅（style.css）。ページに収まる行数の見積もりに使う。 */
+const PRINT_SHEET_WIDTH_PX = 780;
+/** 1ページに収まる行数を実測する。日付・氏名等の欄はwhite-space:nowrapで折り返さないため、
+ *  行の高さは常に一定になる。行数が異なる2つのサンプルシートの高さの差分から、見出し・
+ *  ヘッダー行分を除いた1行あたりの高さを逆算し、ページの縦幅から収まる行数を求める。
+ *  フォントのレンダリング差等を見込んで少し余裕（5%）を持たせる。 */
+function computeRowsPerPage(pdf, margin) {
+  const sampleRow = { date: '2026-04-01', weekday: 3, seniorName: '見本太郎太郎', seniorChangedAt: '2026-04-01 09:00', juniorName: '見本花子花子', juniorChangedAt: '2026-04-01 09:00' };
+  const measureHeight = (n) => {
+    const sheet = buildPrintSheetEl('<h2>見本</h2>', Array(n).fill(sampleRow));
+    document.body.appendChild(sheet);
+    const h = sheet.getBoundingClientRect().height;
+    document.body.removeChild(sheet);
+    return h;
+  };
+  const hA = measureHeight(5);
+  const hB = measureHeight(20);
+  const rowHeight = (hB - hA) / 15;
+  const fixedOverhead = hA - 5 * rowHeight;
+  const usableWidthPt = pdf.internal.pageSize.getWidth() - margin * 2;
+  const usableHeightPt = pdf.internal.pageSize.getHeight() - margin * 2;
+  const ptPerCssPx = usableWidthPt / PRINT_SHEET_WIDTH_PX;
+  const usableCssHeight = usableHeightPt / ptPerCssPx;
+  const rowsPerPage = Math.floor(((usableCssHeight - fixedOverhead) / rowHeight) * 0.95);
+  return Math.max(1, rowsPerPage);
+}
+/** 1枚の印刷シートを画像化し、PDFのページとして追加する（呼び出し側で1ページに収まる行数に
+ *  分割している前提だが、見積もりがずれて収まらない場合の保険として、続けてページを追加する）。 */
 function addSheetPagesToPdf(pdf, sheet, margin, isVeryFirstPage) {
   document.body.appendChild(sheet);
   return window.html2canvas(sheet, { scale: 2 }).then((canvas) => {
@@ -2817,19 +2942,55 @@ function addSheetPagesToPdf(pdf, sheet, margin, isVeryFirstPage) {
     throw err;
   });
 }
+/** 1枚の印刷シートを画像化し、必ず1ページに収まるよう縦横比を保ったまま縮小してPDFに
+ *  埋め込む（行数が多くても複数ページに分かれない）。横方向は中央寄せにする。 */
+function addSheetFitToOnePage(pdf, sheet, margin, isVeryFirstPage) {
+  document.body.appendChild(sheet);
+  return window.html2canvas(sheet, { scale: 2 }).then((canvas) => {
+    document.body.removeChild(sheet);
+    const imgData = canvas.toDataURL('image/png');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const maxWidth = pageWidth - margin * 2;
+    const maxHeight = pageHeight - margin * 2;
+    let width = maxWidth;
+    let height = (canvas.height * width) / canvas.width;
+    if (height > maxHeight) {
+      height = maxHeight;
+      width = (canvas.width * height) / canvas.height;
+    }
+    const x = margin + (maxWidth - width) / 2;
+    if (!isVeryFirstPage) pdf.addPage();
+    pdf.addImage(imgData, 'PNG', x, margin, width, height);
+  }).catch((err) => {
+    if (sheet.parentNode) document.body.removeChild(sheet);
+    throw err;
+  });
+}
+/** 行数が多い場合に備え、1ページに収まる行数ごとにシートを分けてPDF化する
+ *  （表の行の途中でページが分かれることがなく、罫線が欠けない）。 */
 function exportRowsToPdf(title, rows, filename) {
   if (!rows.length) {
     alert('出力する内容がありません');
     return;
   }
-  const sheet = buildPrintSheetEl(`<h2>${escapeHtml(title)}　日直勤務表</h2>`, rows);
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
-  addSheetPagesToPdf(pdf, sheet, 24, true)
+  const margin = 24;
+  const rowsPerPage = computeRowsPerPage(pdf, margin);
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += rowsPerPage) chunks.push(rows.slice(i, i + rowsPerPage));
+  let chain = Promise.resolve();
+  chunks.forEach((chunk, i) => {
+    const sheet = buildPrintSheetEl(`<h2>${escapeHtml(title)}　日直勤務表</h2>`, chunk);
+    chain = chain.then(() => addSheetPagesToPdf(pdf, sheet, margin, i === 0));
+  });
+  chain
     .then(() => pdf.save(filename))
     .catch((err) => alert('PDFの生成に失敗しました：' + err.message));
 }
-/** 処理期（前期／後期）の勤務表を、期間ごとに指定ページへ分けてPDF出力する。
+/** 処理期（前期／後期）の勤務表を、四半期ごとに1ページへ収めてPDF出力する（行数が多い場合は
+ *  自動的に縮小して1ページに収める）。
  *  前期：1ページ目=処理期開始から3ヶ月（4〜6月）／2ページ目=残り3ヶ月（7〜9月）。
  *  後期：1ページ目=処理期開始から3ヶ月（10〜12月）／2ページ目=残り3ヶ月（1〜3月）。 */
 function exportPeriodPdfByQuarter(period, rows, filename) {
@@ -2844,10 +3005,11 @@ function exportPeriodPdfByQuarter(period, rows, filename) {
   ];
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  const margin = 24;
   let chain = Promise.resolve();
   quarters.forEach((q, i) => {
     const sheet = buildPrintSheetEl(`<h2>${escapeHtml(period.label)}　日直勤務表（${q.label}）</h2>`, q.rows);
-    chain = chain.then(() => addSheetPagesToPdf(pdf, sheet, 24, i === 0));
+    chain = chain.then(() => addSheetFitToOnePage(pdf, sheet, margin, i === 0));
   });
   chain
     .then(() => pdf.save(filename))
@@ -2855,7 +3017,7 @@ function exportPeriodPdfByQuarter(period, rows, filename) {
 }
 function initHistoryPdf() {
   document.getElementById('history-pdf-btn').addEventListener('click', () => {
-    exportRowsToPdf('確定済み履歴', history, '日直勤務表_履歴.pdf');
+    exportRowsToPdf('確定済み履歴', visibleHistory(), '日直勤務表_履歴.pdf');
   });
 }
 
@@ -3058,6 +3220,201 @@ function initHistoryXlsxImport() {
 }
 
 /* ------------------------------------------------------------
+ * 使い方アシスタント（アプリ内検索型チャットボット）
+ * 外部API・外部通信は一切使わず、埋め込み済みの「使い方」タブと仕様書・設計書の
+ * テキストをキーワード検索して、関連しそうな見出しを回答として提示する。
+ * 日本語は分かち書きされていないため、形態素解析の代わりに文字バイグラム
+ * （連続2文字の集合）の一致数でスコアリングする簡易的な方法を使う。
+ * ------------------------------------------------------------ */
+let chatSearchIndex = null;
+/** 「使い方」タブのDOMから、見出し（h2/h3）ごとにセクションを切り出す。
+ *  その他使い方（#help-other-content）内の見出しも対象に含む（折りたたまれていても検索対象）。 */
+function buildHelpChatSections() {
+  const panel = document.getElementById('panel-help');
+  if (!panel) return [];
+  const headings = Array.from(panel.querySelectorAll('h2, h3'));
+  return headings.map((h) => {
+    let content = '';
+    let el = h.nextElementSibling;
+    while (el && !/^H[23]$/.test(el.tagName)) {
+      content += ' ' + el.textContent;
+      el = el.nextElementSibling;
+    }
+    return { source: 'help', label: '使い方', heading: h.textContent.trim(), content: content.trim(), element: h };
+  });
+}
+/** 仕様書・設計書のMarkdown文字列から、見出し（#〜####）ごとにセクションを切り出す。
+ *  アンカーIDは renderMarkdownDoc() と同じ採番方法（見出し行の配列インデックス）に合わせる。 */
+function buildDocChatSections(md, docKind, label) {
+  const lines = String(md || '').replace(/\r\n/g, '\n').split('\n');
+  const sections = [];
+  let current = null;
+  lines.forEach((line, idx) => {
+    const m = line.match(/^(#{1,4})\s+(.*)$/);
+    if (m) {
+      if (current) sections.push(current);
+      current = { source: 'doc', docKind, label, heading: m[2].trim(), content: '', anchorId: `doc-h-${idx}` };
+    } else if (current) {
+      current.content += ' ' + line;
+    }
+  });
+  if (current) sections.push(current);
+  return sections;
+}
+/** 検索用インデックスを（初回のみ）まとめて構築する。使い方タブの文言は将来変わりうるため
+ *  都度再構築しても軽いが、仕様書・設計書は分量があるので初回だけ解析してキャッシュする。 */
+function getChatSearchIndex() {
+  if (chatSearchIndex) return chatSearchIndex;
+  const specMd = typeof SPEC_DOC_MD !== 'undefined' ? SPEC_DOC_MD : '';
+  const designMd = typeof DESIGN_DOC_MD !== 'undefined' ? DESIGN_DOC_MD : '';
+  chatSearchIndex = [
+    ...buildHelpChatSections(),
+    ...buildDocChatSections(specMd, 'spec', '仕様書'),
+    ...buildDocChatSections(designMd, 'design', '設計書'),
+  ];
+  return chatSearchIndex;
+}
+/** 文字列を連続2文字（バイグラム）の集合にする（空白は無視する）。1文字以下の場合は
+ *  そのまま1文字の集合として扱う（短いキーワードでも検索できるようにするため）。 */
+function toBigramSet(text) {
+  const s = String(text || '').replace(/\s+/g, '');
+  const set = new Set();
+  if (s.length <= 1) {
+    if (s) set.add(s);
+    return set;
+  }
+  for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+  return set;
+}
+function countOverlap(setA, setB) {
+  let n = 0;
+  setA.forEach((g) => { if (setB.has(g)) n++; });
+  return n;
+}
+/** クエリに関連しそうなセクションを上位5件まで返す。見出しとの一致を本文との一致より
+ *  重く評価し、完全な部分一致にはボーナスを与える。
+ *  仕様書・設計書にはコード識別子等の英数字も含まれるため、単純に「バイグラムが1つでも
+ *  一致すれば採用」にすると、無関係な文字列でも巨大な文書全体のどこかとたまたま一致して
+ *  ヒットしてしまう。そのため、クエリのバイグラムのうち一定割合（34%）以上が同じセクションの
+ *  見出しまたは本文にまとまって含まれている場合（＝完全な部分一致の場合を含む）のみ採用する。 */
+function searchChatIndex(query) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const qGrams = toBigramSet(q);
+  const index = getChatSearchIndex();
+  const scored = index.map((sec) => {
+    const headingGrams = toBigramSet(sec.heading);
+    const contentGrams = toBigramSet(sec.content);
+    const headingOverlap = countOverlap(qGrams, headingGrams);
+    const contentOverlap = countOverlap(qGrams, contentGrams);
+    const bestRatio = Math.max(headingOverlap, contentOverlap) / qGrams.size;
+    const exactHit = sec.heading.includes(q) || sec.content.includes(q);
+    let score = headingOverlap * 3 + contentOverlap;
+    if (sec.heading.includes(q)) score += 30;
+    if (sec.content.includes(q)) score += 10;
+    return { sec, score, bestRatio, exactHit };
+  });
+  return scored
+    .filter((r) => r.exactHit || r.bestRatio >= 0.34)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map((r) => r.sec);
+}
+function chatAppendMessage(role, html) {
+  const wrap = document.getElementById('chatbot-messages');
+  const div = document.createElement('div');
+  div.className = 'chatbot-msg ' + (role === 'user' ? 'chatbot-msg-user' : 'chatbot-msg-bot');
+  div.innerHTML = html;
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+  return div;
+}
+/** 検索結果の該当箇所へ移動する。使い方タブ内の見出しはそのままスクロールし、
+ *  「その他使い方」に隠れている場合は先に展開する。仕様書・設計書は該当タブに切り替えて
+ *  必要なら仕様書/設計書を切り替えたうえで再描画し、アンカーへスクロールする。 */
+function chatJumpToSection(sec) {
+  if (sec.source === 'help') {
+    document.querySelector('.tab-btn[data-tab="help"]').click();
+    const otherContent = document.getElementById('help-other-content');
+    if (otherContent && otherContent.contains(sec.element) && otherContent.classList.contains('hidden')) {
+      otherContent.classList.remove('hidden');
+      const toggleBtn = document.getElementById('help-other-toggle');
+      if (toggleBtn) toggleBtn.textContent = 'その他使い方を隠す';
+    }
+    requestAnimationFrame(() => {
+      sec.element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      sec.element.classList.add('chatbot-highlight');
+      setTimeout(() => sec.element.classList.remove('chatbot-highlight'), 1600);
+    });
+  } else {
+    document.querySelector('.tab-btn[data-tab="docs"]').click();
+    if (currentDocKind !== sec.docKind) {
+      document.querySelectorAll('.doc-switch-btn').forEach((b) => b.classList.toggle('active', b.dataset.doc === sec.docKind));
+      currentDocKind = sec.docKind;
+      renderDocTab();
+    }
+    requestAnimationFrame(() => {
+      const target = document.getElementById(sec.anchorId);
+      if (!target) return;
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      target.classList.add('chatbot-highlight');
+      setTimeout(() => target.classList.remove('chatbot-highlight'), 1600);
+    });
+  }
+  document.getElementById('chatbot-panel').classList.add('hidden');
+}
+function initChatbot() {
+  const toggleBtn = document.getElementById('chatbot-toggle');
+  const panel = document.getElementById('chatbot-panel');
+  const closeBtn = document.getElementById('chatbot-close');
+  const form = document.getElementById('chatbot-form');
+  const input = document.getElementById('chatbot-input');
+  let greeted = false;
+  toggleBtn.addEventListener('click', () => {
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) {
+      if (!greeted) {
+        chatAppendMessage(
+          'bot',
+          'こんにちは。使い方や機能についてキーワードで質問してください（例：「行事の登録方法」「PDFの出し方」「選挙」「バックアップ」）。<br>このアプリの使い方・仕様書・設計書の中から関連しそうな箇所を検索して回答します。外部との通信は行いません。'
+        );
+        greeted = true;
+      }
+      input.focus();
+    }
+  });
+  closeBtn.addEventListener('click', () => panel.classList.add('hidden'));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = input.value.trim();
+    if (!q) return;
+    chatAppendMessage('user', escapeHtml(q));
+    input.value = '';
+    const results = searchChatIndex(q);
+    if (!results.length) {
+      chatAppendMessage('bot', '関連しそうな内容が見つかりませんでした。別のキーワードでお試しください（例：機能名やタブ名、「PDF」「行事」「選挙」「バックアップ」など）。');
+      return;
+    }
+    const msgEl = chatAppendMessage(
+      'bot',
+      `「${escapeHtml(q)}」に関連しそうな内容が見つかりました。押すと該当箇所へ移動します。`
+    );
+    const resultsWrap = document.createElement('div');
+    resultsWrap.className = 'chatbot-results';
+    results.forEach((sec) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chatbot-result-btn';
+      btn.innerHTML = `${escapeHtml(sec.heading)}<span class="chatbot-result-source">${escapeHtml(sec.label)}</span>`;
+      btn.addEventListener('click', () => chatJumpToSection(sec));
+      resultsWrap.appendChild(btn);
+    });
+    msgEl.appendChild(resultsWrap);
+    document.getElementById('chatbot-messages').scrollTop = document.getElementById('chatbot-messages').scrollHeight;
+  });
+}
+
+/* ------------------------------------------------------------
  * 初期化
  * ------------------------------------------------------------ */
 document.addEventListener('DOMContentLoaded', () => {
@@ -3083,6 +3440,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initPeriodBar();
   initDocsTab();
   initHelpToggle();
+  initChatbot();
 
   renderStaffTable();
   renderMonthRuleTable();

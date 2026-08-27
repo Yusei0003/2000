@@ -284,11 +284,40 @@ function passesGap(staffId, date, minGapDays, lastDateMap) {
   if (!last) return true;
   return diffDays(last, date) >= minGapDays;
 }
-/** 担当回数の少なさ・前回勤務日の古さで並べる（未割当を最優先） */
-function sortByCountAndRecency(list, countMap, lastDateMap) {
+/** ランクが不明な職員（個別登録した職員等）を「下位の職員」として扱うための代用値。
+ *  実在のランク（市長10〜主事補800）より確実に大きい値にし、優先的に割り当てて
+ *  構わない（＝偉い人として保護しない）扱いにする。 */
+const UNKNOWN_RANK_FALLBACK = 100000;
+/** 年齢が不明な職員（個別登録した職員等）を「若手」として扱うための代用値。
+ *  実在する年齢より確実に小さい値にし、優先的に割り当てて構わない扱いにする。 */
+const UNKNOWN_AGE_FALLBACK = -1;
+/** 担当回数の少なさ→ランクの大きさ（下位の職員から）→年齢の若さ→残り出番機会の少なさ→
+ *  前回勤務日の古さ、の順で並べる（未割当を最優先）。
+ *  ランク・年齢は、同じ担当回数の職員が複数いる場合のタイブレークとして働く。ランクが
+ *  大きい（＝下位の）職員、同ランクなら年齢が若い職員を優先的に割り当てることで、階級の
+ *  高い職員が結果的に余りやすくなる。残り出番機会は、課除外ルールや行事の除外期間の関係で
+ *  割当可能な日が少ない職員（＝出番の窓が狭い職員）を、その窓のうちに優先的に割り当てる
+ *  ためのもの（remainingOpportunityMap 参照）。 */
+function sortByCountAndRecency(list, countMap, lastDateMap, remainingMap) {
   return [...list].sort((a, b) => {
     const countDiff = (countMap.get(a.id) || 0) - (countMap.get(b.id) || 0);
     if (countDiff !== 0) return countDiff;
+    const rankA = a.rank != null ? a.rank : UNKNOWN_RANK_FALLBACK;
+    const rankB = b.rank != null ? b.rank : UNKNOWN_RANK_FALLBACK;
+    const rankDiff = rankB - rankA; // ランクが大きい（下位の）方を優先
+    if (rankDiff !== 0) return rankDiff;
+    const ageA = a.age != null ? a.age : UNKNOWN_AGE_FALLBACK;
+    const ageB = b.age != null ? b.age : UNKNOWN_AGE_FALLBACK;
+    const ageDiff = ageA - ageB; // 若い方を優先
+    if (ageDiff !== 0) return ageDiff;
+    if (remainingMap) {
+      const remA = remainingMap.get(a.id);
+      const remB = remainingMap.get(b.id);
+      if (remA != null && remB != null) {
+        const remDiff = remA - remB; // 残り出番機会が少ない方を優先
+        if (remDiff !== 0) return remDiff;
+      }
+    }
     const la = lastDateMap.get(a.id);
     const lb = lastDateMap.get(b.id);
     if (!la && lb) return -1;
@@ -312,8 +341,8 @@ function interleave(a, b) {
  *  同一レベルの候補プール（係長級のみ／主事級のみ）向け。異なるレベルを混在させる
  *  相方候補プールでは、係長級が常に資格要件を満たす（isQualified=true）ため使わない
  *  （使うと係長級が主事級より不当に優先されてしまう）。 */
-function sortCandidates(list, countMap, lastDateMap) {
-  return sortByCountAndRecency(list, countMap, lastDateMap).sort((a, b) => {
+function sortCandidates(list, countMap, lastDateMap, remainingMap) {
+  return sortByCountAndRecency(list, countMap, lastDateMap, remainingMap).sort((a, b) => {
     const qa = isQualified(a) ? 0 : 1;
     const qb = isQualified(b) ? 0 : 1;
     return qa - qb;
@@ -331,6 +360,24 @@ function isSeniorTitleClashTitle(title) {
 }
 function isSeniorTitleClash(a, b) {
   return isSeniorTitleClashTitle(a.title) && isSeniorTitleClashTitle(b.title);
+}
+/** 係長級2名の組合せの場合、表示上の1人目（senior欄・左）にランクの値が低い方（役職が上の方）、
+ *  同ランクなら年齢が上の方が来るよう並べ替える。係長級・主事級が混在するペアは、もともと
+ *  必ず係長級が1人目（senior欄）になっており、係長級のランク（400〜600）は主事級のランク
+ *  （601〜999）より必ず低いため、並べ替えは不要（対象外）。割当の資格判定（誰が選ばれるか）
+ *  には一切影響しない、表示順のみの並べ替え。 */
+function orderSeniorJuniorForDisplay(pair) {
+  if (!pair || !pair.senior || !pair.junior) return pair;
+  if (pair.senior.level !== 'senior' || pair.junior.level !== 'senior') return pair;
+  const rankA = pair.senior.rank != null ? pair.senior.rank : Infinity;
+  const rankB = pair.junior.rank != null ? pair.junior.rank : Infinity;
+  if (rankB < rankA) return { senior: pair.junior, junior: pair.senior };
+  if (rankB === rankA) {
+    const ageA = pair.senior.age != null ? pair.senior.age : -Infinity;
+    const ageB = pair.junior.age != null ? pair.junior.age : -Infinity;
+    if (ageB > ageA) return { senior: pair.junior, junior: pair.senior };
+  }
+  return pair;
 }
 /** 直近2年度以内（既定）に組んだペアかどうかを判定するための「最終年度」マップを構築 */
 function buildPairLastFiscalYear(history) {
@@ -412,6 +459,58 @@ function generateAssignments({
   const sorted = [...dutyDates].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   /* --------------------------------------------------------
+   * 日ごとの静的な除外情報（課除外・行事除外）を先に計算しておく。
+   * 月別課除外ルール・行事の除外期間は割当結果に依存しない（＝処理の
+   * 途中で変わらない）ため、日ごとのループで毎回計算し直す必要がなく、
+   * 下の「残り出番機会」の計算にも使い回せる。
+   * -------------------------------------------------------- */
+  const dayContextByDate = new Map();
+  sorted.forEach((dd) => {
+    const date = parseISO(dd.date);
+    const month = date.getMonth() + 1;
+    const excludedDepts = new Set();
+    let electionDutyExcludedToday = false;
+    monthRules.forEach((r) => {
+      if (r.months.includes(month)) r.depts.forEach((dep) => excludedDepts.add(dep));
+    });
+    eventExclusions.forEach((e) => {
+      const start = parseISO(e.date);
+      const end = parseISO(e.endDate || e.date);
+      if (date >= start && date <= end) {
+        (e.depts || []).forEach((dep) => excludedDepts.add(dep));
+        if (e.targetElectionDuty) electionDutyExcludedToday = true;
+      }
+    });
+    dayContextByDate.set(dd.date, { date, excludedDepts, electionDutyExcludedToday });
+  });
+
+  /* --------------------------------------------------------
+   * 残り出番機会（この処理期内で、静的な制約だけを見た割当可能日数）
+   * 課除外ルール・行事除外（選挙管理委員会併任の除外を含む）・育休等・
+   * 退職予定日・新規採用の除外のみで数える。性別ゾーン・120日間隔・
+   * ペア重複・特別期間の重複回避など、割当の進行に応じて変わる動的な
+   * 制約は含めない（事前に一度だけ計算できないため）。
+   * 課除外や行事に当たりやすく出番の窓が狭い職員を、割当の並び替えで
+   * 優先的に使うために利用する（sortByCountAndRecency 参照）。
+   * -------------------------------------------------------- */
+  const remainingOpportunityMap = new Map();
+  activeStaff.forEach((s) => {
+    let count = 0;
+    dayContextByDate.forEach(({ date, excludedDepts, electionDutyExcludedToday }) => {
+      if (
+        !isOnLeave(s, date, leaves) &&
+        passesRetire(s, date, retireLeadMonths) &&
+        passesNewHire(s, date, newHireMonths) &&
+        ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
+        !(electionDutyExcludedToday && s.electionDuty)
+      ) {
+        count++;
+      }
+    });
+    remainingOpportunityMap.set(s.id, count);
+  });
+
+  /* --------------------------------------------------------
    * 性別ゾーン（女性ゾーン→男性ゾーンの一方向ラッチ）
    * --------------------------------------------------------
    * 「男性の期間に女性が混ざると交代しづらい」ため、日ごとに毎回
@@ -443,22 +542,8 @@ function generateAssignments({
   }
 
   sorted.forEach((dd) => {
-    const date = parseISO(dd.date);
-    const month = date.getMonth() + 1;
+    const { date, excludedDepts, electionDutyExcludedToday } = dayContextByDate.get(dd.date);
     const currentFY = fiscalYearOf(date);
-    const excludedDepts = new Set();
-    let electionDutyExcludedToday = false;
-    monthRules.forEach((r) => {
-      if (r.months.includes(month)) r.depts.forEach((dep) => excludedDepts.add(dep));
-    });
-    eventExclusions.forEach((e) => {
-      const start = parseISO(e.date);
-      const end = parseISO(e.endDate || e.date);
-      if (date >= start && date <= end) {
-        (e.depts || []).forEach((dep) => excludedDepts.add(dep));
-        if (e.targetElectionDuty) electionDutyExcludedToday = true;
-      }
-    });
 
     const special = detectSpecialPeriod(date);
     let bannedBySpecial = new Set();
@@ -503,9 +588,9 @@ function generateAssignments({
      *  もう1名を選ぶ。allowRepeat=false のときは「今期まだ割り当てていない職員」だけを探索対象にする
      *  （同一処理期内1人1回ルール）。allowRepeat=true では今期割当済みの職員も対象に含める。 */
     const tryGender = (gender, allowRepeat) => {
-      const seniorPool = sortCandidates(eligibleBase('senior', gender), countMap, lastDateMap);
-      const juniorPool = sortCandidates(eligibleBase('junior', gender), countMap, lastDateMap);
-      const combinedPool = sortByCountAndRecency(interleave(seniorPool, juniorPool), countMap, lastDateMap);
+      const seniorPool = sortCandidates(eligibleBase('senior', gender), countMap, lastDateMap, remainingOpportunityMap);
+      const juniorPool = sortCandidates(eligibleBase('junior', gender), countMap, lastDateMap, remainingOpportunityMap);
+      const combinedPool = sortByCountAndRecency(interleave(seniorPool, juniorPool), countMap, lastDateMap, remainingOpportunityMap);
       const onlyFresh = !!periodId && !allowRepeat;
       const searchSeniorPool = onlyFresh ? seniorPool.filter((s) => !periodUsedIds.has(s.id)) : seniorPool;
       const searchCombinedPool = onlyFresh ? combinedPool.filter((s) => !periodUsedIds.has(s.id)) : combinedPool;
@@ -568,9 +653,9 @@ function generateAssignments({
       let soloIgnoreElectionDuty = false;
       for (const { ignoreGap, ignoreElectionDuty } of combos) {
         if (pair) break;
-        const zSeniorPool = sortCandidates(eligibleBase('senior', gender, ignoreGap, ignoreElectionDuty), countMap, lastDateMap);
-        const zJuniorPool = sortCandidates(eligibleBase('junior', gender, ignoreGap, ignoreElectionDuty), countMap, lastDateMap);
-        const zCombinedPool = sortByCountAndRecency(interleave(zSeniorPool, zJuniorPool), countMap, lastDateMap);
+        const zSeniorPool = sortCandidates(eligibleBase('senior', gender, ignoreGap, ignoreElectionDuty), countMap, lastDateMap, remainingOpportunityMap);
+        const zJuniorPool = sortCandidates(eligibleBase('junior', gender, ignoreGap, ignoreElectionDuty), countMap, lastDateMap, remainingOpportunityMap);
+        const zCombinedPool = sortByCountAndRecency(interleave(zSeniorPool, zJuniorPool), countMap, lastDateMap, remainingOpportunityMap);
         if (zSeniorPool.length) {
           const anchor = zSeniorPool[0];
           const partner = zCombinedPool.find((p) => p.id !== anchor.id) || null;
@@ -648,8 +733,9 @@ function generateAssignments({
     if (usedGenderToday === 'F') femaleUsedThisPeriod = true;
     if (zoneToday === 'M' && femaleUsedThisPeriod) genderZone = 'M';
 
-    const chosenSenior = pair ? pair.senior : null;
-    const chosenJunior = pair ? pair.junior : null;
+    const orderedPair = orderSeniorJuniorForDisplay(pair);
+    const chosenSenior = orderedPair ? orderedPair.senior : null;
+    const chosenJunior = orderedPair ? orderedPair.junior : null;
     const assignedCount = (chosenSenior ? 1 : 0) + (chosenJunior ? 1 : 0);
 
     const reasons = [];
