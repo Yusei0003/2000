@@ -217,7 +217,11 @@ function standingExcludedReason(staff, standingExcludedDepts) {
   return null;
 }
 
-/** 育休等の登録期間内で日直の対象外となる職員か（職員番号で照合）。終了日が未設定の場合は期限なしとして扱う */
+/** 育休等の登録期間内で日直の対象外となる職員か（職員番号で照合）。終了日が未設定の場合は期限なしとして扱う。
+ *  産休（kind==='maternity'）は、終了後に必ず育休へ入るとみなし、その職員の育休記録
+ *  （kind==='childcare'）が別途登録されていない限り、産休の終了日を過ぎても対象外のまま
+ *  扱う（育休情報が未登録でも産休終了後は割り当てない）。育休記録が登録されていれば、
+ *  その記録自体が産休終了後の対象外期間を判定する。 */
 function isOnLeave(staff, date, leaves) {
   if (!Array.isArray(leaves) || !staff.number) return false;
   return leaves.some((lv) => {
@@ -225,7 +229,14 @@ function isOnLeave(staff, date, leaves) {
     if (!lv.startDate) return false;
     if (date < parseISO(lv.startDate)) return false;
     if (!lv.endDate) return true; // 終了日未定＝復帰まで対象外
-    return date <= parseISO(lv.endDate);
+    if (date <= parseISO(lv.endDate)) return true;
+    if (lv.kind === 'maternity') {
+      const hasChildcareRecord = leaves.some(
+        (o) => o && o.kind === 'childcare' && String(o.staffNumber) === String(staff.number)
+      );
+      if (!hasChildcareRecord) return true; // 産休終了後、育休の登録が無くても対象外を継続
+    }
+    return false;
   });
 }
 

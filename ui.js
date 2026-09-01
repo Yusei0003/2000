@@ -288,6 +288,7 @@ function buildPeriod(fiscalYear, half) {
     endDate: range.endDate,
     label: periodLabelOf(fiscalYear, half),
     standingExcludedDepts: [],
+    sickLeaveExcludedNumbers: [], // 長期病気休暇の延長確認チェックリストで、担当者が対象外にした職員番号
     createdAt: new Date().toISOString(),
   };
 }
@@ -1392,6 +1393,79 @@ function renderLeaveTable() {
       renderLeaveTable();
     });
   });
+  renderSickLeaveExtensionList();
+}
+
+/* ------------------------------------------------------------
+ * 長期病気休暇の延長確認チェックリスト
+ * ------------------------------------------------------------
+ * 病気休暇は実績ベースで登録されるため、勤務表作成時点では処理期内の
+ * 病気休暇がまだ登録されていないことが多い。処理期開始の3ヶ月前までに
+ * 開始していた（＝長期化している）病気休暇のうち、この処理期と重なる
+ * ものを候補としてリストアップし、延長の可能性があるかどうかを担当者が
+ * チェックで判断する。チェックした職員は、実際の病気休暇の登録終了日に
+ * 関係なく、この処理期の間ずっと割当対象から除外する。
+ * ------------------------------------------------------------ */
+/** 処理期開始の3ヶ月以上前から始まっている病気休暇のうち、この処理期と重なるものを返す */
+function sickLeaveExtensionCandidates(period) {
+  const threshold = toISO(addMonths(parseISO(period.startDate), -3));
+  return leaves
+    .filter((lv) => lv.kind === 'sick' && lv.startDate <= threshold && leaveOverlapsPeriod(lv, period))
+    .sort((a, b) => (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0));
+}
+function renderSickLeaveExtensionList() {
+  const card = document.getElementById('sick-leave-extension-card');
+  if (!card) return;
+  const p = currentPeriod();
+  const candidates = sickLeaveExtensionCandidates(p);
+  card.classList.toggle('hidden', candidates.length === 0);
+  if (!candidates.length) return;
+  const excludedSet = new Set((p.sickLeaveExcludedNumbers || []).map(String));
+  const tbody = document.getElementById('sick-leave-extension-tbody');
+  tbody.innerHTML = candidates
+    .map((lv) => {
+      const s = staff.find((x) => String(x.number) === String(lv.staffNumber));
+      const name = s ? escapeHtml(s.name) : lv.importedName ? `${escapeHtml(lv.importedName)}<span class="muted">（名簿になし）</span>` : '<span class="muted">（名簿に該当職員なし）</span>';
+      const checked = excludedSet.has(String(lv.staffNumber));
+      return `
+    <tr>
+      <td><input type="checkbox" class="sick-extension-toggle" data-number="${escapeHtml(lv.staffNumber)}" ${checked ? 'checked' : ''}></td>
+      <td>${escapeHtml(lv.staffNumber)}</td>
+      <td>${name}</td>
+      <td>${escapeHtml(lv.category || '')}</td>
+      <td>${escapeHtml(lv.startDate)}</td>
+      <td>${lv.endDate ? escapeHtml(lv.endDate) : '<span class="muted">未定</span>'}</td>
+    </tr>`;
+    })
+    .join('');
+  tbody.querySelectorAll('.sick-extension-toggle').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const number = cb.dataset.number;
+      const cur = currentPeriod();
+      const set = new Set((cur.sickLeaveExcludedNumbers || []).map(String));
+      if (cb.checked) set.add(number);
+      else set.delete(number);
+      cur.sickLeaveExcludedNumbers = [...set];
+      save(KEY_PERIODS, periods);
+    });
+  });
+}
+/** 長期病気休暇の延長確認でチェックされた職員を、この処理期の間ずっと除外する
+ *  仮想的な育休等除外期間（leaves）として合成し、実際のleavesに追加して返す。
+ *  勤務表作成・未割当理由の説明の両方で、この合成後の配列を渡す。 */
+function effectiveLeavesForPeriod(period) {
+  const excludedNumbers = period.sickLeaveExcludedNumbers || [];
+  if (!excludedNumbers.length) return leaves;
+  const synthetic = excludedNumbers.map((number) => ({
+    id: `sick-ext-${period.id}-${number}`,
+    staffNumber: String(number),
+    startDate: period.startDate,
+    endDate: period.endDate,
+    category: '病気休暇（延長確認によりこの処理期は除外）',
+    importedName: '',
+    kind: 'sick',
+  }));
+  return leaves.concat(synthetic);
 }
 /** 育休Excelを解析する（職員番号・氏名・区分・開始・終了の列を読む）
  *  B列とD列がどちらも「氏名」のため、先に現れる列（職員氏名）を採用する */
@@ -1419,6 +1493,7 @@ function parseLeaveWorkbook(workbook) {
         category: idxCategory >= 0 ? String(r[idxCategory] || '').trim() : '',
         startDate: excelValueToISO(r[idxStart]),
         endDate: idxEnd >= 0 ? excelValueToISO(r[idxEnd]) : null,
+        kind: 'childcare',
       }))
       .filter((r) => r.startDate);
   }
@@ -1449,6 +1524,7 @@ function parseMaternityWorkbook(workbook) {
         category: '産休',
         startDate: excelValueToISO(r[idxStart]),
         endDate: idxEnd >= 0 ? excelValueToISO(r[idxEnd]) : null,
+        kind: 'maternity',
       }))
       .filter((r) => r.startDate);
   }
@@ -1483,13 +1559,16 @@ function parseSickLeaveWorkbook(workbook) {
         category: idxDisease >= 0 ? String(r[idxDisease] || '').trim() : '病気休暇',
         startDate: excelValueToISO(r[idxStart]),
         endDate: idxEnd >= 0 ? excelValueToISO(r[idxEnd]) : null,
+        kind: 'sick',
       }))
       .filter((r) => r.startDate);
   }
   return null;
 }
 /** 育休・産休・病気休暇Excelの解析結果を育休等除外期間（leaves）へ取り込む共通処理。
- *  名簿にない職員番号（会計年度任用職員等）の行は取込対象外とする */
+ *  名簿にない職員番号（会計年度任用職員等）の行は取込対象外とする。
+ *  kind（'childcare'/'maternity'/'sick'）は、産休終了後の育休みなし判定（app.js
+ *  isOnLeave）や、長期病気休暇の延長確認リストの絞り込みに使う機械可読な区分。 */
 function importLeaveRows(rows, kindLabel) {
   let added = 0;
   let duplicated = 0;
@@ -1515,6 +1594,7 @@ function importLeaveRows(rows, kindLabel) {
       endDate: r.endDate,
       category: r.category || '',
       importedName: r.name || '',
+      kind: r.kind || null,
     });
     added++;
   });
@@ -2051,7 +2131,7 @@ function computeUnassignedSummaryHtml() {
     history,
     minGapDays: settings.minGapDays,
     newHireMonths: settings.newHireMonths,
-    leaves,
+    leaves: effectiveLeavesForPeriod(p),
     specialLookback: settings.specialLookback,
     retireLeadMonths: settings.retireLeadMonths,
   };
@@ -2207,7 +2287,7 @@ function initGenerateRun() {
       specialLookback: settings.specialLookback,
       pairLookbackYears: settings.pairLookbackYears,
       standingExcludedDepts: currentPeriod().standingExcludedDepts,
-      leaves,
+      leaves: effectiveLeavesForPeriod(currentPeriod()),
       retireLeadMonths: settings.retireLeadMonths,
       periodId: currentPeriod().id,
     });
