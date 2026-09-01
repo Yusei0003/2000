@@ -3377,20 +3377,75 @@ function initHistoryXlsxImport() {
  * （連続2文字の集合）の一致数でスコアリングする簡易的な方法を使う。
  * ------------------------------------------------------------ */
 let chatSearchIndex = null;
+/** ユーザーが入力しがちな言い回しから、実際に文書中で使われている語への言い換え辞書。
+ *  検索時にキーがクエリに含まれていれば、対応する語も一緒に検索対象に加える（同義語展開）。 */
+const CHAT_SYNONYMS = {
+  '印刷': ['PDF', '出力'],
+  'プリント': ['PDF', '出力'],
+  '出力': ['PDF', 'エクスポート'],
+  'エクセル': ['xlsx', 'Excel', 'エクスポート'],
+  'excel': ['xlsx', 'エクセル'],
+  '交換': ['交代', '変更届'],
+  '入れ替え': ['交代', '交換'],
+  '差し替え': ['交代', '変更届'],
+  '休み': ['休暇', '休業'],
+  '休日': ['休暇'],
+  '名前': ['氏名', '職員名'],
+  '削除': ['消す', '取り消し'],
+  '消去': ['削除', '取り消し'],
+  '取り消し': ['削除', '取消'],
+  '追加': ['登録', '新規'],
+  '登録': ['追加', '新規'],
+  '保存': ['バックアップ', 'エクスポート'],
+  'バックアップ': ['保存', 'エクスポート', 'インポート'],
+  '選挙': ['投票', '期日前'],
+  '担当': ['当番', '日直'],
+  '当番': ['担当', '日直'],
+  '日直': ['担当', '当番'],
+  '順番': ['割当', '割り当て', 'ローテーション'],
+  '割り当て': ['割当', '順番'],
+  '間違い': ['修正', '訂正', '変更'],
+  '訂正': ['修正', '変更'],
+  'やり方': ['方法', '手順'],
+  '使い方': ['方法', '手順'],
+};
+/** Markdown由来の装飾記号を検索・表示のために取り除く（太字**、コード`、箇条書き記号、表の|、見出し#）。
+ *  あわせて、HTML/Markdownソースのインデント由来の余分な空白・連続する空行も整える
+ *  （チャット内でのその場プレビュー表示が読みやすくなるように）。 */
+function stripMdArtifacts(text) {
+  const cleaned = String(text || '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/^#+\s*/gm, '');
+  const lines = cleaned.split('\n').map((line) => line.replace(/[ \t]+/g, ' ').trim());
+  const out = [];
+  lines.forEach((line) => {
+    if (line === '' && out[out.length - 1] === '') return;
+    out.push(line);
+  });
+  return out.join('\n').trim();
+}
 /** 「使い方」タブのDOMから、見出し（h2/h3）ごとにセクションを切り出す。
- *  その他使い方（#help-other-content）内の見出しも対象に含む（折りたたまれていても検索対象）。 */
+ *  その他使い方（#help-other-content）内の見出しも対象に含む（折りたたまれていても検索対象）。
+ *  h3は h2 の中にネストされたDOM構造になっているため、単純に「次の兄弟要素」を辿ると、
+ *  大枠のh2（「その他使い方」等）が配下の全h3の本文を丸ごと抱え込んでしまい、
+ *  ほぼどんな検索語にもヒットする巨大セクションになってしまう。そのため Range を使い、
+ *  ネスト位置に関係なく「このヘッダーの直後」から「（ネスト有無を問わず）次のヘッダーの直前」までを
+ *  文書順で取り出す。 */
 function buildHelpChatSections() {
   const panel = document.getElementById('panel-help');
   if (!panel) return [];
   const headings = Array.from(panel.querySelectorAll('h2, h3'));
-  return headings.map((h) => {
-    let content = '';
-    let el = h.nextElementSibling;
-    while (el && !/^H[23]$/.test(el.tagName)) {
-      content += ' ' + el.textContent;
-      el = el.nextElementSibling;
-    }
-    return { source: 'help', label: '使い方', heading: h.textContent.trim(), content: content.trim(), element: h };
+  return headings.map((h, i) => {
+    const range = document.createRange();
+    range.setStartAfter(h);
+    if (headings[i + 1]) range.setEndBefore(headings[i + 1]);
+    else range.setEndAfter(panel.lastChild);
+    const holder = document.createElement('div');
+    holder.appendChild(range.cloneContents());
+    return { source: 'help', label: '使い方', heading: h.textContent.trim(), content: stripMdArtifacts(holder.textContent), element: h };
   });
 }
 /** 仕様書・設計書のMarkdown文字列から、見出し（#〜####）ごとにセクションを切り出す。
@@ -3409,6 +3464,7 @@ function buildDocChatSections(md, docKind, label) {
     }
   });
   if (current) sections.push(current);
+  sections.forEach((sec) => { sec.content = stripMdArtifacts(sec.content); });
   return sections;
 }
 /** 検索用インデックスを（初回のみ）まとめて構築する。使い方タブの文言は将来変わりうるため
@@ -3441,16 +3497,28 @@ function countOverlap(setA, setB) {
   setA.forEach((g) => { if (setB.has(g)) n++; });
   return n;
 }
-/** クエリに関連しそうなセクションを上位5件まで返す。見出しとの一致を本文との一致より
- *  重く評価し、完全な部分一致にはボーナスを与える。
+/** クエリに含まれる同義語辞書のキーに対応する言い換え語を集める（重複除去）。 */
+function expandQuerySynonyms(query) {
+  const q = String(query || '');
+  const extra = new Set();
+  Object.keys(CHAT_SYNONYMS).forEach((key) => {
+    if (q.includes(key)) CHAT_SYNONYMS[key].forEach((t) => extra.add(t));
+  });
+  return Array.from(extra);
+}
+/** クエリに関連しそうなセクションをスコア降順で返す（呼び出し側で表示件数を絞る）。
+ *  見出しとの一致を本文との一致より重く評価し、完全な部分一致にはボーナスを与える。
  *  仕様書・設計書にはコード識別子等の英数字も含まれるため、単純に「バイグラムが1つでも
  *  一致すれば採用」にすると、無関係な文字列でも巨大な文書全体のどこかとたまたま一致して
  *  ヒットしてしまう。そのため、クエリのバイグラムのうち一定割合（34%）以上が同じセクションの
- *  見出しまたは本文にまとまって含まれている場合（＝完全な部分一致の場合を含む）のみ採用する。 */
+ *  見出しまたは本文にまとまって含まれている場合（＝完全な部分一致の場合を含む）のみ採用する。
+ *  同義語辞書で展開した言い換え語も検索・完全一致判定・ハイライト表示の対象に加える。 */
 function searchChatIndex(query) {
   const q = String(query || '').trim();
   if (!q) return [];
-  const qGrams = toBigramSet(q);
+  const synonymTerms = expandQuerySynonyms(q);
+  const qGrams = toBigramSet([q, ...synonymTerms].join(' '));
+  const highlightTerms = [q, ...synonymTerms].filter((t) => t && t.length >= 1);
   const index = getChatSearchIndex();
   const scored = index.map((sec) => {
     const headingGrams = toBigramSet(sec.heading);
@@ -3458,17 +3526,67 @@ function searchChatIndex(query) {
     const headingOverlap = countOverlap(qGrams, headingGrams);
     const contentOverlap = countOverlap(qGrams, contentGrams);
     const bestRatio = Math.max(headingOverlap, contentOverlap) / qGrams.size;
-    const exactHit = sec.heading.includes(q) || sec.content.includes(q);
+    const exactHit = [q, ...synonymTerms].some((t) => sec.heading.includes(t) || sec.content.includes(t));
     let score = headingOverlap * 3 + contentOverlap;
     if (sec.heading.includes(q)) score += 30;
     if (sec.content.includes(q)) score += 10;
-    return { sec, score, bestRatio, exactHit };
+    return { sec, score, bestRatio, exactHit, highlightTerms };
   });
   return scored
     .filter((r) => r.exactHit || r.bestRatio >= 0.34)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
-    .map((r) => r.sec);
+    .sort((a, b) => b.score - a.score);
+}
+/** テキスト中でヒットした語（terms）を <strong class="chatbot-hit"> で囲みつつ、その他はHTMLエスケープする。 */
+function highlightHtml(text, terms) {
+  const s = String(text || '');
+  const ranges = [];
+  (terms || []).forEach((t) => {
+    if (!t) return;
+    let idx = 0;
+    while (true) {
+      const pos = s.indexOf(t, idx);
+      if (pos === -1) break;
+      ranges.push([pos, pos + t.length]);
+      idx = pos + t.length;
+    }
+  });
+  if (!ranges.length) return escapeHtml(s);
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged = [ranges[0]];
+  ranges.slice(1).forEach(([start, end]) => {
+    const last = merged[merged.length - 1];
+    if (start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  });
+  let html = '';
+  let last = 0;
+  merged.forEach(([start, end]) => {
+    html += escapeHtml(s.slice(last, start));
+    html += '<strong class="chatbot-hit">' + escapeHtml(s.slice(start, end)) + '</strong>';
+    last = end;
+  });
+  html += escapeHtml(s.slice(last));
+  return html;
+}
+/** 本文からヒット語の周辺を抜き出したスニペット（HTML、ハイライト済み）を作る。 */
+function extractSnippet(content, terms, maxLen) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const limit = maxLen || 70;
+  if (text.length <= limit) return highlightHtml(text, terms);
+  let hitPos = -1;
+  (terms || []).some((t) => {
+    if (!t) return false;
+    const idx = text.indexOf(t);
+    if (idx !== -1) { hitPos = idx; return true; }
+    return false;
+  });
+  let start = hitPos === -1 ? 0 : Math.max(0, hitPos - Math.floor(limit / 3));
+  if (start + limit > text.length) start = Math.max(0, text.length - limit);
+  let snippet = text.slice(start, start + limit);
+  if (start > 0) snippet = '…' + snippet;
+  if (start + limit < text.length) snippet += '…';
+  return highlightHtml(snippet, terms);
 }
 function chatAppendMessage(role, html) {
   const wrap = document.getElementById('chatbot-messages');
@@ -3513,6 +3631,113 @@ function chatJumpToSection(sec) {
   }
   document.getElementById('chatbot-panel').classList.add('hidden');
 }
+/** よくある質問チップ（クリックするだけでその語で検索できる）。 */
+const CHATBOT_QUICK_CHIPS = [
+  '勤務表を作る',
+  '変更届を反映する',
+  'PDFを出力する',
+  '職員を登録する',
+  'バックアップの取り方',
+  '選挙の日直登録',
+];
+function chatScrollToBottom() {
+  const wrap = document.getElementById('chatbot-messages');
+  wrap.scrollTop = wrap.scrollHeight;
+}
+function appendQuickChips() {
+  const wrap = document.createElement('div');
+  wrap.className = 'chatbot-chips';
+  CHATBOT_QUICK_CHIPS.forEach((label) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chatbot-chip';
+    chip.textContent = label;
+    chip.addEventListener('click', () => {
+      chatAppendMessage('user', escapeHtml(label));
+      runChatQuery(label);
+    });
+    wrap.appendChild(chip);
+  });
+  document.getElementById('chatbot-messages').appendChild(wrap);
+  chatScrollToBottom();
+}
+/** 1件の検索結果を表示するUIを組み立てる。見出し＋抜粋（ハイライト付き）のボタンを押すと、
+ *  チャット内にその場で本文を展開する（画面遷移しない）。「この場所を画面で開く」で
+ *  該当タブ・該当箇所へ実際にジャンプする。 */
+function buildResultItem(r) {
+  const sec = r.sec;
+  const terms = r.highlightTerms || [];
+  const item = document.createElement('div');
+  item.className = 'chatbot-result-item';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'chatbot-result-btn';
+  const snippet = extractSnippet(sec.content, terms, 70);
+  btn.innerHTML = `<span class="chatbot-result-heading">${highlightHtml(sec.heading, terms)}<span class="chatbot-result-source">${escapeHtml(sec.label)}</span></span>` +
+    (snippet ? `<span class="chatbot-result-snippet">${snippet}</span>` : '');
+  const inlineWrap = document.createElement('div');
+  inlineWrap.className = 'chatbot-inline-content hidden';
+  const fullText = sec.content.length > 500 ? sec.content.slice(0, 500) + '…' : sec.content;
+  const inlineText = document.createElement('div');
+  inlineText.className = 'chatbot-inline-text';
+  inlineText.innerHTML = highlightHtml(fullText, terms) || '（本文はありません）';
+  const jumpBtn = document.createElement('button');
+  jumpBtn.type = 'button';
+  jumpBtn.className = 'chatbot-jump-btn';
+  jumpBtn.textContent = 'この場所を画面で開く';
+  jumpBtn.addEventListener('click', () => chatJumpToSection(sec));
+  inlineWrap.appendChild(inlineText);
+  inlineWrap.appendChild(jumpBtn);
+  btn.addEventListener('click', () => {
+    inlineWrap.classList.toggle('hidden');
+    if (!inlineWrap.classList.contains('hidden')) {
+      requestAnimationFrame(() => inlineWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+    }
+  });
+  item.appendChild(btn);
+  item.appendChild(inlineWrap);
+  return item;
+}
+/** キーワードqで検索し、結果をチャットに追加する。使い方タブの内容がヒットした場合は
+ *  それを優先して表示し、仕様書・設計書は「詳しい資料も見る」の折りたたみに回す
+ *  （使い方タブが専門用語の少ない案内文であるのに対し、仕様書・設計書は章番号や
+ *  専門的な記述が多く、初見では分かりづらいため）。使い方タブに該当が無い場合のみ、
+ *  仕様書・設計書を通常表示する。 */
+function runChatQuery(q) {
+  const results = searchChatIndex(q);
+  if (!results.length) {
+    chatAppendMessage('bot', '関連しそうな内容が見つかりませんでした。別のキーワードでお試しいただくか、下のよくある質問からお選びください。');
+    appendQuickChips();
+    return;
+  }
+  const helpResults = results.filter((r) => r.sec.source === 'help').slice(0, 5);
+  const docResults = results.filter((r) => r.sec.source !== 'help').slice(0, 5);
+  const primary = helpResults.length ? helpResults : docResults;
+  const secondary = helpResults.length ? docResults : [];
+  const msgEl = chatAppendMessage('bot', `「${escapeHtml(q)}」に関連しそうな内容です。押すとその場で詳しく開けます。`);
+  const resultsWrap = document.createElement('div');
+  resultsWrap.className = 'chatbot-results';
+  primary.forEach((r) => resultsWrap.appendChild(buildResultItem(r)));
+  msgEl.appendChild(resultsWrap);
+  if (secondary.length) {
+    const moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'chatbot-more-btn';
+    const moreLabel = `詳しい資料も見る（仕様書・設計書 ${secondary.length}件）`;
+    moreBtn.textContent = moreLabel;
+    const secWrap = document.createElement('div');
+    secWrap.className = 'chatbot-results hidden';
+    secondary.forEach((r) => secWrap.appendChild(buildResultItem(r)));
+    moreBtn.addEventListener('click', () => {
+      secWrap.classList.toggle('hidden');
+      moreBtn.textContent = secWrap.classList.contains('hidden') ? moreLabel : '詳しい資料を隠す';
+      chatScrollToBottom();
+    });
+    msgEl.appendChild(moreBtn);
+    msgEl.appendChild(secWrap);
+  }
+  chatScrollToBottom();
+}
 function initChatbot() {
   const toggleBtn = document.getElementById('chatbot-toggle');
   const panel = document.getElementById('chatbot-panel');
@@ -3526,8 +3751,9 @@ function initChatbot() {
       if (!greeted) {
         chatAppendMessage(
           'bot',
-          'こんにちは。使い方や機能についてキーワードで質問してください（例：「行事の登録方法」「PDFの出し方」「選挙」「バックアップ」）。<br>このアプリの使い方・仕様書・設計書の中から関連しそうな箇所を検索して回答します。外部との通信は行いません。'
+          'こんにちは。使い方や機能についてキーワードで質問するか、下のよくある質問から選んでください。<br>このアプリの使い方・仕様書・設計書の中から関連しそうな箇所を検索して回答します。外部との通信は行いません。'
         );
+        appendQuickChips();
         greeted = true;
       }
       input.focus();
@@ -3540,27 +3766,7 @@ function initChatbot() {
     if (!q) return;
     chatAppendMessage('user', escapeHtml(q));
     input.value = '';
-    const results = searchChatIndex(q);
-    if (!results.length) {
-      chatAppendMessage('bot', '関連しそうな内容が見つかりませんでした。別のキーワードでお試しください（例：機能名やタブ名、「PDF」「行事」「選挙」「バックアップ」など）。');
-      return;
-    }
-    const msgEl = chatAppendMessage(
-      'bot',
-      `「${escapeHtml(q)}」に関連しそうな内容が見つかりました。押すと該当箇所へ移動します。`
-    );
-    const resultsWrap = document.createElement('div');
-    resultsWrap.className = 'chatbot-results';
-    results.forEach((sec) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'chatbot-result-btn';
-      btn.innerHTML = `${escapeHtml(sec.heading)}<span class="chatbot-result-source">${escapeHtml(sec.label)}</span>`;
-      btn.addEventListener('click', () => chatJumpToSection(sec));
-      resultsWrap.appendChild(btn);
-    });
-    msgEl.appendChild(resultsWrap);
-    document.getElementById('chatbot-messages').scrollTop = document.getElementById('chatbot-messages').scrollHeight;
+    runChatQuery(q);
   });
 }
 
