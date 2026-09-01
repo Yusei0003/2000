@@ -291,13 +291,15 @@ const UNKNOWN_RANK_FALLBACK = 100000;
 /** 年齢が不明な職員（個別登録した職員等）を「若手」として扱うための代用値。
  *  実在する年齢より確実に小さい値にし、優先的に割り当てて構わない扱いにする。 */
 const UNKNOWN_AGE_FALLBACK = -1;
-/** 担当回数の少なさ→ランクの大きさ（下位の職員から）→年齢の若さ→残り出番機会の少なさ→
+/** 担当回数の少なさ→ランクの大きさ（下位の職員から）→残り出番機会の少なさ→年齢の若さ→
  *  前回勤務日の古さ、の順で並べる（未割当を最優先）。
- *  ランク・年齢は、同じ担当回数の職員が複数いる場合のタイブレークとして働く。ランクが
- *  大きい（＝下位の）職員、同ランクなら年齢が若い職員を優先的に割り当てることで、階級の
- *  高い職員が結果的に余りやすくなる。残り出番機会は、課除外ルールや行事の除外期間の関係で
- *  割当可能な日が少ない職員（＝出番の窓が狭い職員）を、その窓のうちに優先的に割り当てる
- *  ためのもの（remainingOpportunityMap 参照）。 */
+ *  ランクは、同じ担当回数の職員が複数いる場合のタイブレークとして働く。ランクが大きい
+ *  （＝下位の）職員を優先的に割り当てることで、階級の高い職員が結果的に余りやすくなる。
+ *  残り出番機会は、課除外ルールや行事の除外期間の関係で割当可能な日が少ない職員（＝出番の
+ *  窓が狭い職員）を、その窓のうちに優先的に割り当てるためのもの（remainingOpportunityMap
+ *  参照）。年齢より前で判定する（年齢は生年月日が同じ職員がほぼいないため、年齢を先に
+ *  比較すると年齢差だけでほぼ毎回決着してしまい、残り出番機会が実質的に一切参照されず、
+ *  出番の窓が狭い職員が割当機会をすり抜けたまま処理期を終えてしまうことを防ぐため）。 */
 function sortByCountAndRecency(list, countMap, lastDateMap, remainingMap) {
   return [...list].sort((a, b) => {
     const countDiff = (countMap.get(a.id) || 0) - (countMap.get(b.id) || 0);
@@ -306,10 +308,6 @@ function sortByCountAndRecency(list, countMap, lastDateMap, remainingMap) {
     const rankB = b.rank != null ? b.rank : UNKNOWN_RANK_FALLBACK;
     const rankDiff = rankB - rankA; // ランクが大きい（下位の）方を優先
     if (rankDiff !== 0) return rankDiff;
-    const ageA = a.age != null ? a.age : UNKNOWN_AGE_FALLBACK;
-    const ageB = b.age != null ? b.age : UNKNOWN_AGE_FALLBACK;
-    const ageDiff = ageA - ageB; // 若い方を優先
-    if (ageDiff !== 0) return ageDiff;
     if (remainingMap) {
       const remA = remainingMap.get(a.id);
       const remB = remainingMap.get(b.id);
@@ -318,6 +316,10 @@ function sortByCountAndRecency(list, countMap, lastDateMap, remainingMap) {
         if (remDiff !== 0) return remDiff;
       }
     }
+    const ageA = a.age != null ? a.age : UNKNOWN_AGE_FALLBACK;
+    const ageB = b.age != null ? b.age : UNKNOWN_AGE_FALLBACK;
+    const ageDiff = ageA - ageB; // 若い方を優先
+    if (ageDiff !== 0) return ageDiff;
     const la = lastDateMap.get(a.id);
     const lb = lastDateMap.get(b.id);
     if (!la && lb) return -1;
@@ -515,30 +517,36 @@ function generateAssignments({
    * --------------------------------------------------------
    * 「男性の期間に女性が混ざると交代しづらい」ため、日ごとに毎回
    * 女性から探すのではなく、いったん男性側に切り替わったら、その
-   * 処理期内は女性ゾーンへ戻さない。境界は「その日に割り当てられる
-   * 未割当の女性が1人もいなくなった日」とする。
-   * femaleUsedThisPeriod は安全弁：女性を一度も使っていない状態で
-   * （行事除外等により）たまたま1日だけ女性が0人になっても、それだけ
-   * では男性ゾーンに固定しない（女性ゾーンの開始前に誤って確定させない）。
+   * 処理期内は女性ゾーンへ戻さない。
+   * ラッチの境界は「女性が（この処理期内で）本当に使い切られたこと」
+   * （＝割当可能な女性職員が全員すでに1回以上割り当て済みであること）
+   * とする。「その日たまたま割当可能な女性が1人もいなかった」というだけ
+   * では固定しない。もし「その日」だけを基準に固定してしまうと、行事
+   * 除外・育休等が特定の1日だけ重なった偶然で女性ゾーンが処理期の
+   * 序盤で永久に締め切られてしまい、実際にはまだ多く残っている未割当の
+   * 女性職員が、処理期の残り全日程から一切除外されて0回のまま終わる
+   * （その一方で男性側は同じ職員が2回目・3回目と繰り返し割り当てられる）
+   * 事態を招く。
+   * isFemaleExhausted()：割当可能な日が1日もない（remainingOpportunityMap
+   * が0の）女性職員は最初から対象外として除外したうえで、残りの女性
+   * 職員が全員 periodUsedIds（今期割当済み）に入っているかで判定する。
+   * femaleUsedThisPeriod は安全弁：女性を一度も使っていない状態では
+   * （まだ女性ゾーンが始まってすらいないため）固定しない。
    * ------------------------------------------------------ */
   let genderZone = 'F';
   let femaleUsedThisPeriod = false;
+  const femaleCandidateIds = activeStaff
+    .filter((s) => s.gender === 'F' && (remainingOpportunityMap.get(s.id) || 0) > 0)
+    .map((s) => s.id);
+  const isFemaleExhausted = () =>
+    femaleCandidateIds.length > 0 && femaleCandidateIds.every((id) => periodUsedIds.has(id));
   if (periodId) {
     const staffGenderById = new Map(staffList.map((s) => [s.id, s.gender]));
-    history
-      .filter((h) => h.periodId === periodId)
-      .slice()
-      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-      .forEach((h) => {
-        const genders = [h.seniorId, h.juniorId]
-          .filter(Boolean)
-          .map((id) => staffGenderById.get(id))
-          .filter(Boolean);
-        const hasFemale = genders.includes('F');
-        const maleOnly = genders.length > 0 && genders.every((g) => g === 'M');
-        if (hasFemale) femaleUsedThisPeriod = true;
-        if (maleOnly && femaleUsedThisPeriod) genderZone = 'M';
-      });
+    const usedFemaleInHistory = history.some(
+      (h) => h.periodId === periodId && [h.seniorId, h.juniorId].some((id) => staffGenderById.get(id) === 'F')
+    );
+    if (usedFemaleInHistory) femaleUsedThisPeriod = true;
+    if (femaleUsedThisPeriod && isFemaleExhausted()) genderZone = 'M';
   }
 
   sorted.forEach((dd) => {
@@ -707,8 +715,10 @@ function generateAssignments({
     // それが失敗した場合に限り、男性を（今期未割当→今期2回目→最終手段まで）フルに探す。
     // 男性が1名も見つけられなかった場合（男性が0名の職場等）は、ゾーンを切り替えても
     // 意味がないため、女性側の2回目・最終手段に留まる（一度も男性ゾーンに入らない）。
-    // 一度男性ゾーンに入ったら、この処理期の残りは女性を一切探索しない（femaleUsedThisPeriod
-    // ガード付きで genderZone をラッチする）。ペアは常に同性。
+    // 女性が本当に使い切られた（isFemaleExhausted）場合に限り、この処理期の残りは女性を
+    // 一切探索しない（femaleUsedThisPeriod ガード付きで genderZone をラッチする）。まだ
+    // 使い切られていない場合は、今日だけ男性を借りて（zoneToday='M'）、明日以降も女性を
+    // 優先的に探し続ける（genderZoneは'F'のまま）。ペアは常に同性。
     let zoneToday = genderZone;
     let outcome;
     if (zoneToday === 'F') {
@@ -731,7 +741,7 @@ function generateAssignments({
     const { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap, forcedElectionDutyUsed } = outcome;
     const usedGenderToday = pair ? (pair.senior ? pair.senior.gender : pair.junior.gender) : null;
     if (usedGenderToday === 'F') femaleUsedThisPeriod = true;
-    if (zoneToday === 'M' && femaleUsedThisPeriod) genderZone = 'M';
+    if (zoneToday === 'M' && femaleUsedThisPeriod && isFemaleExhausted()) genderZone = 'M';
 
     const orderedPair = orderSeniorJuniorForDisplay(pair);
     const chosenSenior = orderedPair ? orderedPair.senior : null;
