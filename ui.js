@@ -2086,8 +2086,14 @@ function renderGenResultTable() {
 
   const warnCount = draftResults.filter((r) => r.status === 'warning').length;
   const errorCount = draftResults.filter((r) => r.status === 'error').length;
+  // 係長級を含まない日（市民課経験者が資格要件を満たしている日）は、基本の形ではないため件数を明示する
+  const noSeniorCount = draftResults.filter((r) => {
+    const s = resolveAnyStaff(r.seniorId);
+    const j = resolveAnyStaff(r.juniorId);
+    return s && j && s.level !== 'senior' && j.level !== 'senior';
+  }).length;
   document.getElementById('gen-warning-summary').innerHTML = draftResults.length
-    ? `<p class="hint">合計 ${draftResults.length} 日 / 要確認 ${warnCount} 日${errorCount ? ` / <strong style="color:var(--danger)">人数不足エラー ${errorCount} 日</strong>` : ''}</p>`
+    ? `<p class="hint">合計 ${draftResults.length} 日 / 要確認 ${warnCount} 日${errorCount ? ` / <strong style="color:var(--danger)">人数不足エラー ${errorCount} 日</strong>` : ''}${noSeniorCount ? ` / 係長級を含まない日 ${noSeniorCount} 日（市民課経験者が資格要件を満たしています）` : ''}</p>`
     : '';
 
   const optEl = document.getElementById('gen-optimize-summary');
@@ -2423,7 +2429,7 @@ function initGenerateRun() {
   });
 
   document.getElementById('gen-export').addEventListener('click', () => {
-    const rows = [['日付', '曜日', '祝日等', '係長級', '主事級', '状態']].concat(
+    const rows = [['日付', '曜日', '祝日等', '1人目', '2人目', '状態']].concat(
       draftResults.map((r) => [r.date, WEEKDAY_LABEL[r.weekday], r.holidayName || '', r.seniorName, r.juniorName, statusLabel(r.status)])
     );
     downloadCsv('日直勤務表.csv', rows);
@@ -2539,7 +2545,7 @@ function renderGenLog() {
     btn.addEventListener('click', () => {
       const log = genLog.find((l) => l.confirmBatchId === btn.dataset.batch);
       if (!log) return;
-      const rows = [['日付', '曜日', '祝日等', '係長級', '主事級', '状態']].concat(
+      const rows = [['日付', '曜日', '祝日等', '1人目', '2人目', '状態']].concat(
         log.results.map((r) => [r.date, WEEKDAY_LABEL[r.weekday], r.holidayName || '', r.seniorName, r.juniorName, statusLabel(r.status)])
       );
       const stamp = log.confirmedAt ? log.confirmedAt.slice(0, 10) : '';
@@ -2731,7 +2737,7 @@ function initHistoryBulkDelete() {
 
 document.addEventListener('click', (e) => {
   if (e.target.id === 'history-export-btn') {
-    const rows = [['期間', '日付', '曜日', '係長級', '変更日時', '主事級', '変更日時', '状態']].concat(
+    const rows = [['期間', '日付', '曜日', '1人目', '変更日時', '2人目', '変更日時', '状態']].concat(
       visibleHistory().map((r) => [
         r.periodLabel || '',
         r.date,
