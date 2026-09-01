@@ -298,6 +298,12 @@ function passesGap(staffId, date, minGapDays, lastDateMap) {
 /** ランクが不明な職員（個別登録した職員等）を「下位の職員」として扱うための代用値。
  *  実在のランク（市長10〜主事補800）より確実に大きい値にし、優先的に割り当てて
  *  構わない（＝偉い人として保護しない）扱いにする。 */
+/** 「今期未割当の職員に1回目を回すために、既に割当済みの職員へ2回目以降を担ってもらう」
+ *  仕組み（tryGenderPartialFresh）で、1人が同一処理期内に担当してよい上限回数。
+ *  「1日2名のうち少なくとも1名は係長級」という条件があるため、係長級が極端に少ない性別では、
+ *  この上限が無いと少数の係長級だけが際限なく担当し続けることになる（半期で十数回など）。
+ *  通常の名簿では上限に達しないため割当結果は変わらず、極端に偏った名簿でのみ働く安全弁。 */
+const PARTIAL_FRESH_MAX_DUTIES = 6;
 const UNKNOWN_RANK_FALLBACK = 100000;
 /** 年齢が不明な職員（個別登録した職員等）を「若手」として扱うための代用値。
  *  実在する年齢より確実に小さい値にし、優先的に割り当てて構わない扱いにする。 */
@@ -447,6 +453,7 @@ function generateAssignments({
   const specialUse = new Map(); // key -> Set(staffId)
   const pairLastFY = buildPairLastFiscalYear(history);
   const periodUsedIds = new Set(); // 同一処理期内で既に割り当て済みの職員（1人1回ルール用）
+  const periodCountMap = new Map(); // 同一処理期内の担当回数（2回目以降を担ってもらう上限の判定用）
 
   history.forEach((h) => {
     [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => {
@@ -460,7 +467,10 @@ function generateAssignments({
       [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => specialUse.get(h.specialPeriodKey).add(id));
     }
     if (periodId && h.periodId === periodId) {
-      [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => periodUsedIds.add(id));
+      [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => {
+        periodUsedIds.add(id);
+        periodCountMap.set(id, (periodCountMap.get(id) || 0) + 1);
+      });
     }
   });
 
@@ -664,21 +674,72 @@ function generateAssignments({
       return { pair, relaxedStage };
     };
 
-    /** 指定した性別に固定して、可能な限りその性別だけでその日を埋める。
-     *  includeFresh=true なら「今期未割当」から試す。見つからなければ、今期未割当の職員に
-     *  限り最低間隔日数だけを緩和して再度探す（forcedFreshGapUsed）。それでも見つからなければ
-     *  「今期2回目」を試し、それでも見つからなければ、係長級の有無・最低間隔日数（120日）も
-     *  緩和した最終手段で1名（無理なら相方なしの単独）まで探す（他方の性別には一切広げない）。 */
-    const searchGenderFull = (gender, includeFresh) => {
-      let r = includeFresh ? tryGender(gender, false) : { pair: null, relaxedStage: 0, repeat: false };
-      let forcedFreshGapUsed = false;
-      if (!r.pair) {
-        const rFreshGap = tryGenderFreshIgnoreGap(gender);
-        if (rFreshGap.pair) {
-          r = { ...rFreshGap, repeat: false };
-          forcedFreshGapUsed = true;
+    /** 2名のうち「片方だけ」が今期未割当のペアを探す。
+     *  「1日2名のうち少なくとも1名は係長級」という条件があるため、今期未割当の係長級が
+     *  尽きた時点で「2名とも今期未割当」のペアは作れなくなる。そこで打ち切ってしまうと、
+     *  今期未割当の主事級が大量に残っていても、その性別の日をそれ以上作れず、
+     *  （性別ゾーンが切り替わって）その人たちは処理期を通して1回も割り当てられずに終わる。
+     *  そのため、既に割当済みの職員に2回目を担ってもらってでも、今期未割当の職員に
+     *  1回目を回すことを優先する。2回目になる職員は担当回数の少ない順に選ばれる。 */
+    const tryGenderPartialFresh = (gender, ignoreGap) => {
+      if (!periodId) return { pair: null, relaxedStage: 0 };
+      const seniorPool = sortCandidates(eligibleBase('senior', gender, ignoreGap, false), countMap, lastDateMap, remainingOpportunityMap);
+      const juniorPool = sortCandidates(eligibleBase('junior', gender, ignoreGap, false), countMap, lastDateMap, remainingOpportunityMap);
+      const combinedPool = sortByCountAndRecency(interleave(seniorPool, juniorPool), countMap, lastDateMap, remainingOpportunityMap);
+      const freshSeniorPool = seniorPool.filter((s) => !periodUsedIds.has(s.id));
+      const freshCombinedPool = combinedPool.filter((s) => !periodUsedIds.has(s.id));
+      if (!freshSeniorPool.length && !freshCombinedPool.length) return { pair: null, relaxedStage: 0 };
+      // 2回目以降を担ってもらう側は、同一処理期内の担当回数が上限に達していない職員に限る
+      // （係長級が極端に少ない性別では、特定の職員だけが際限なく担当し続けてしまうため）
+      const canTakeAnother = (s) => (periodCountMap.get(s.id) || 0) < PARTIAL_FRESH_MAX_DUTIES;
+      const reusableSeniorPool = seniorPool.filter(canTakeAnother);
+      const reusableCombinedPool = combinedPool.filter(canTakeAnother);
+      let pair = null;
+      let relaxedStage = 0;
+      for (let i = 0; i < stages.length; i++) {
+        // 1人目（係長級）が今期未割当のパターン → 相方は2回目でもよい
+        pair = findPair(freshSeniorPool, reusableCombinedPool, { ...stages[i], ...pairOpts });
+        // 2人目が今期未割当のパターン → 1人目（係長級）は2回目でもよい
+        if (!pair) pair = findPair(reusableSeniorPool, freshCombinedPool, { ...stages[i], ...pairOpts });
+        if (pair) {
+          relaxedStage = i;
+          break;
         }
       }
+      return { pair, relaxedStage };
+    };
+
+    const pairIncludesUsed = (pair) =>
+      !!(pair && periodId && ((pair.senior && periodUsedIds.has(pair.senior.id)) || (pair.junior && periodUsedIds.has(pair.junior.id))));
+
+    /** 今期未割当の職員を1名でも含むペアを、緩和の少ない順に探す（第1〜第4段階）。
+     *  ①2名とも今期未割当・最低間隔日数を厳守
+     *  ②2名とも今期未割当・最低間隔日数のみ緩和
+     *  ③片方が今期未割当（もう片方は2回目）・最低間隔日数を厳守
+     *  ④片方が今期未割当・最低間隔日数のみ緩和
+     *  いずれも同性ペア・所属除外・育休等の絶対条件は一切緩和しない。 */
+    const tryGenderFreshTiers = (gender, includeStrictFresh) => {
+      const none = { pair: null, relaxedStage: 0, repeat: false, forcedFreshGapUsed: false, partialFreshUsed: false };
+      if (includeStrictFresh) {
+        const t1 = tryGender(gender, false);
+        if (t1.pair) return { ...t1, forcedFreshGapUsed: false, partialFreshUsed: false };
+      }
+      const t2 = tryGenderFreshIgnoreGap(gender);
+      if (t2.pair) return { ...t2, repeat: false, forcedFreshGapUsed: true, partialFreshUsed: false };
+      const t3 = tryGenderPartialFresh(gender, false);
+      if (t3.pair) return { ...t3, repeat: pairIncludesUsed(t3.pair), forcedFreshGapUsed: false, partialFreshUsed: true };
+      const t4 = tryGenderPartialFresh(gender, true);
+      if (t4.pair) return { ...t4, repeat: pairIncludesUsed(t4.pair), forcedFreshGapUsed: true, partialFreshUsed: true };
+      return none;
+    };
+
+    /** 指定した性別に固定して、可能な限りその性別だけでその日を埋める。
+     *  まず「今期未割当の職員を1名でも含むペア」を第1〜第4段階で探し（tryGenderFreshTiers）、
+     *  それでも見つからなければ「2名とも今期2回目」を試し、最後に係長級の有無・最低間隔日数も
+     *  緩和した最終手段で1名（無理なら相方なしの単独）まで探す（他方の性別には一切広げない）。 */
+    const searchGenderFull = (gender, includeFresh) => {
+      let r = tryGenderFreshTiers(gender, includeFresh);
+      let forcedFreshGapUsed = !!r.forcedFreshGapUsed;
       if (!r.pair) {
         const r2 = tryGender(gender, true);
         if (r2.pair) r = r2;
@@ -753,9 +814,9 @@ function generateAssignments({
       return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap, forcedElectionDutyUsed, forcedFreshGapUsed };
     };
 
-    // 性別ゾーン方式：女性ゾーンでは「女性・今期未割当」のみをまず試す（＝境界は「その日に
-    // 割り当てられる未割当の女性が1人もいない」こと。女性の2回目をここで試すと、女性が
-    // 少数でも1人1回の“2回目”だけで際限なく粘ってしまい、男性が一度も使われなくなるため）。
+    // 性別ゾーン方式：女性ゾーンでは「今期未割当の女性を1名でも含むペア」をまず試す
+    // （第1〜第4段階。tryGenderFreshTiers を参照）。2名とも今期2回目のペアはここでは作らない
+    // ＝女性が少数でも“2回目同士”で際限なく粘ってしまい、男性が一度も使われなくなるのを防ぐ。
     // それが失敗した場合に限り、男性を（今期未割当→今期2回目→最終手段まで）フルに探す。
     // 男性が1名も見つけられなかった場合（男性が0名の職場等）は、ゾーンを切り替えても
     // 意味がないため、女性側の2回目・最終手段に留まる（一度も男性ゾーンに入らない）。
@@ -766,9 +827,9 @@ function generateAssignments({
     let zoneToday = genderZone;
     let outcome;
     if (zoneToday === 'F') {
-      const freshF = tryGender('F', false);
+      const freshF = tryGenderFreshTiers('F', true);
       if (freshF.pair) {
-        outcome = { ...freshF, forcedFallbackUsed: false, forcedNoSenior: false, forcedIgnoredGap: false, forcedElectionDutyUsed: false, forcedFreshGapUsed: false };
+        outcome = { ...freshF, forcedFallbackUsed: false, forcedNoSenior: false, forcedIgnoredGap: false, forcedElectionDutyUsed: false };
       } else {
         const maleFull = searchGenderFull('M', true);
         if (maleFull.pair) {
@@ -807,6 +868,7 @@ function generateAssignments({
         reasons.push('人数不足のため、通常のルールを緩和して割り当てました');
       }
     } else if (forcedFreshGapUsed) {
+      if (repeat) reasons.push('同一処理期内で2回目の割当です');
       reasons.push(`前回勤務日から${minGapDays}日未満ですが、今期まだ一度も割り当てていない職員を優先したため割り当てました`);
       if (relaxedStage >= 4) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
       if (relaxedStage >= 3) reasons.push('同一課の組合せになっています');
@@ -843,11 +905,13 @@ function generateAssignments({
       countMap.set(chosenSenior.id, (countMap.get(chosenSenior.id) || 0) + 1);
       lastDateMap.set(chosenSenior.id, date);
       periodUsedIds.add(chosenSenior.id);
+      periodCountMap.set(chosenSenior.id, (periodCountMap.get(chosenSenior.id) || 0) + 1);
     }
     if (chosenJunior) {
       countMap.set(chosenJunior.id, (countMap.get(chosenJunior.id) || 0) + 1);
       lastDateMap.set(chosenJunior.id, date);
       periodUsedIds.add(chosenJunior.id);
+      periodCountMap.set(chosenJunior.id, (periodCountMap.get(chosenJunior.id) || 0) + 1);
     }
     if (chosenSenior && chosenJunior) {
       pairLastFY.set(pairKey(chosenSenior.id, chosenJunior.id), currentFY);
@@ -860,6 +924,518 @@ function generateAssignments({
   });
 
   return results;
+}
+
+/* ------------------------------------------------------------
+ * 割当後の最適化（フィードバック・修復パス）
+ * ------------------------------------------------------------
+ * generateAssignments は日付順に1回だけ通す貪欲法のため、後の日ほど枠が
+ * 埋まった状態で判定される。その結果、「その職員が入れたはずの数少ない日」が
+ * 先に別の職員で埋まってしまうと、あとから挽回する手段がなかった。
+ * このパスでは作成し終わった勤務表全体を見渡し、絶対条件を一切崩さない
+ * 入替えだけを試して、全体が良くなる場合に限って採用する。
+ *
+ * 【絶対条件（このパスでも決して崩さない）】
+ *   ・同性ペア（その日に割り当てられている性別以外の職員は入れない）
+ *   ・その日の性別ゾーン（女性の日／男性の日の別を変えない）
+ *   ・育休・産休・病気休暇等の除外期間（産休終了後の育休みなしを含む）
+ *   ・常時除外（派遣・7割措置・秘書係・運転手・常時除外所属）
+ *   ・月別の課除外ルール・行事の除外期間
+ *   ・選挙管理委員会事務局（併任）の除外期間
+ *   ・新規採用職員の除外・退職予定日の除外
+ *   ・年末年始・GWの重複回避（過去の同期間の担当者）
+ *   ・同じ日の2枠に同じ職員を入れない
+ * 【改善対象（コストとして評価し、下がる入替えだけを採用する）】
+ *   ・今期0回の職員（最重視）
+ *   ・空き枠（1名のみ・0名の日）／係長級が含まれない日
+ *   ・担当回数の偏り（3回目・4回目…ほど重く評価）
+ *   ・最低間隔日数違反
+ *   ・過去のペアと重複／同一課／課長補佐・副主幹の組合せ／資格要件
+ *
+ * 探索の順序はすべて固定で、同じ入力からは必ず同じ結果になる（決定的）。
+ * ------------------------------------------------------------ */
+const OPT_WEIGHTS = {
+  unassigned: 1000, // 今期0回の職員1人あたり
+  emptySlot: 500, // 埋まっていない枠1つあたり
+  noSenior: 400, // 係長級が1人も含まれない日
+  overAssign: 60, // (担当回数-1)^2 に掛ける
+  gapViolation: 80, // 最低間隔日数を下回る間隔1つあたり
+  unqualified: 40, // 資格要件（係長級・市民課経験者）を満たさない日
+  pairRepeat: 30, // 過去のペアと重複／同じ組合せの重複
+  sameDept: 25, // 同一課の組合せ
+  titleClash: 20, // 課長補佐・副主幹の組合せ
+};
+const OPT_MAX_ROUNDS = 30;
+
+function optPeriodCount(id, ctx, state) {
+  return (state.datesByPerson.get(id) || []).length + (ctx.periodHistoryCount.get(id) || 0);
+}
+/** 今回の作成分が絡む「最低間隔日数を下回る間隔」の数。履歴だけで完結する間隔は動かせないため数えない */
+function optGapViolations(id, ctx, state) {
+  if (!ctx.minGapDays) return 0;
+  const draft = state.datesByPerson.get(id) || [];
+  if (!draft.length) return 0;
+  const draftSet = new Set(draft);
+  const all = [...new Set([...(ctx.historyDatesByPerson.get(id) || []), ...draft])].sort();
+  let n = 0;
+  for (let i = 1; i < all.length; i++) {
+    if (!draftSet.has(all[i]) && !draftSet.has(all[i - 1])) continue;
+    if (diffDays(parseISO(all[i - 1]), parseISO(all[i])) < ctx.minGapDays) n++;
+  }
+  return n;
+}
+/** その日の割当が、最低間隔日数を下回る他の勤務日を持つか */
+function optHasGapViolationAt(id, date, ctx, state) {
+  if (!ctx.minGapDays) return false;
+  const target = parseISO(date);
+  const all = [...new Set([...(ctx.historyDatesByPerson.get(id) || []), ...(state.datesByPerson.get(id) || [])])];
+  return all.some((d) => d !== date && Math.abs(diffDays(parseISO(d), target)) < ctx.minGapDays);
+}
+function optPersonCost(id, ctx, state) {
+  if (!ctx.targetIds.has(id)) return 0;
+  const total = optPeriodCount(id, ctx, state);
+  if (total === 0) return OPT_WEIGHTS.unassigned;
+  return Math.pow(total - 1, 2) * OPT_WEIGHTS.overAssign + optGapViolations(id, ctx, state) * OPT_WEIGHTS.gapViolation;
+}
+function optDayCost(rec, ctx, state) {
+  const s = rec.seniorId ? ctx.staffById.get(rec.seniorId) : null;
+  const j = rec.juniorId ? ctx.staffById.get(rec.juniorId) : null;
+  const filled = (rec.seniorId ? 1 : 0) + (rec.juniorId ? 1 : 0);
+  let cost = (2 - filled) * OPT_WEIGHTS.emptySlot;
+  if (filled < 2 || !s || !j) return cost; // 名簿に無い職員（履歴専用等）を含む日は品質評価しない
+  if (s.level !== 'senior' && j.level !== 'senior') cost += OPT_WEIGHTS.noSenior;
+  if (!isQualified(s) && !isQualified(j)) cost += OPT_WEIGHTS.unqualified;
+  if (s.dept && j.dept && s.dept === j.dept) cost += OPT_WEIGHTS.sameDept;
+  if (s.level === 'senior' && j.level === 'senior' && isSeniorTitleClash(s, j)) cost += OPT_WEIGHTS.titleClash;
+  const info = ctx.dayInfo.get(rec.date);
+  if (info && isPairBanned(s.id, j.id, ctx.pairLastFY, info.currentFY, ctx.pairLookbackYears)) cost += OPT_WEIGHTS.pairRepeat;
+  return cost;
+}
+/** 同じ組合せが今回の作成分の中で複数日に出ていないか（重複1組ごとに加点） */
+function optPairDuplicated(state, idA, idB) {
+  return (state.pairCounts.get(pairKey(idA, idB)) || 0) > 1;
+}
+function optAddPair(state, rec) {
+  if (!rec.seniorId || !rec.juniorId) return;
+  const k = pairKey(rec.seniorId, rec.juniorId);
+  const c = (state.pairCounts.get(k) || 0) + 1;
+  state.pairCounts.set(k, c);
+  if (c > 1) state.dupPenalty += OPT_WEIGHTS.pairRepeat;
+}
+function optRemovePair(state, rec) {
+  if (!rec.seniorId || !rec.juniorId) return;
+  const k = pairKey(rec.seniorId, rec.juniorId);
+  const c = state.pairCounts.get(k) || 0;
+  if (c <= 0) return;
+  state.pairCounts.set(k, c - 1);
+  if (c > 1) state.dupPenalty -= OPT_WEIGHTS.pairRepeat;
+}
+function optSetSlot(state, ctx, date, level, personId) {
+  const rec = state.recordByDate.get(date);
+  const prevId = level === 'senior' ? rec.seniorId : rec.juniorId;
+  if (prevId === (personId || null)) return;
+  optRemovePair(state, rec);
+  if (prevId) {
+    const arr = state.datesByPerson.get(prevId);
+    if (arr) {
+      const i = arr.indexOf(date);
+      if (i >= 0) arr.splice(i, 1);
+    }
+  }
+  const person = personId ? ctx.staffById.get(personId) : null;
+  if (level === 'senior') {
+    rec.seniorId = personId || null;
+    rec.seniorName = person ? person.name : '';
+  } else {
+    rec.juniorId = personId || null;
+    rec.juniorName = person ? person.name : '';
+  }
+  if (personId) {
+    if (!state.datesByPerson.has(personId)) state.datesByPerson.set(personId, []);
+    const arr = state.datesByPerson.get(personId);
+    arr.push(date);
+    arr.sort();
+  }
+  optAddPair(state, rec);
+}
+/** 変更をまとめて適用し、元に戻すための関数を返す */
+function optApply(state, ctx, changes) {
+  const prev = changes.map((c) => {
+    const rec = state.recordByDate.get(c.date);
+    return { date: c.date, level: c.level, id: c.level === 'senior' ? rec.seniorId : rec.juniorId };
+  });
+  changes.forEach((c) => optSetSlot(state, ctx, c.date, c.level, c.to));
+  return () => {
+    for (let i = prev.length - 1; i >= 0; i--) optSetSlot(state, ctx, prev[i].date, prev[i].level, prev[i].id);
+  };
+}
+/** その日に係長級が1名以上含まれているか（1日2名のうち少なくとも1名は係長級） */
+function optHasSenior(rec, ctx) {
+  return [rec.seniorId, rec.juniorId]
+    .filter(Boolean)
+    .some((id) => (ctx.staffById.get(id) || {}).level === 'senior');
+}
+/** 変更を試し、全体のコストが下がる場合だけ確定する（下がらなければ元に戻す）。
+ *  「係長級が1名も含まれない日」を新たに作ってしまう入替えは、コストの多寡にかかわらず
+ *  採用しない（既に係長級がいない日を改善する方向の入替えは可）。 */
+function optTryMove(state, ctx, changes) {
+  const dates = [...new Set(changes.map((c) => c.date))];
+  const people = new Set();
+  changes.forEach((c) => {
+    const rec = state.recordByDate.get(c.date);
+    const cur = c.level === 'senior' ? rec.seniorId : rec.juniorId;
+    if (cur) people.add(cur);
+    if (c.to) people.add(c.to);
+  });
+  const seniorBefore = new Map();
+  let before = state.dupPenalty;
+  dates.forEach((d) => {
+    const rec = state.recordByDate.get(d);
+    seniorBefore.set(d, optHasSenior(rec, ctx));
+    before += optDayCost(rec, ctx, state);
+  });
+  people.forEach((id) => { before += optPersonCost(id, ctx, state); });
+  const undo = optApply(state, ctx, changes);
+  const brokeSenior = dates.some((d) => seniorBefore.get(d) && !optHasSenior(state.recordByDate.get(d), ctx));
+  if (brokeSenior) {
+    undo();
+    return false;
+  }
+  let after = state.dupPenalty;
+  dates.forEach((d) => { after += optDayCost(state.recordByDate.get(d), ctx, state); });
+  people.forEach((id) => { after += optPersonCost(id, ctx, state); });
+  if (after < before) return true;
+  undo();
+  return false;
+}
+/** その職員をその日のその枠に入れてよいか（絶対条件のみを判定する。最低間隔日数は
+ *  「今期未割当を優先する場合に緩和してよい」ため、ここでは判定せずコストで評価する） */
+function optCanPlace(staffMember, rec, level, ctx) {
+  if (!staffMember || !ctx.targetIds.has(staffMember.id)) return false;
+  const other = level === 'senior' ? rec.juniorId : rec.seniorId;
+  if (other === staffMember.id) return false;
+  const zone = ctx.zoneGenderByDate.get(rec.date);
+  if (!zone || staffMember.gender !== zone) return false;
+  const info = ctx.dayInfo.get(rec.date);
+  if (!info) return false;
+  if (isOnLeave(staffMember, info.date, ctx.leaves)) return false;
+  if (!passesRetire(staffMember, info.date, ctx.retireLeadMonths)) return false;
+  if (!passesNewHire(staffMember, info.date, ctx.newHireMonths)) return false;
+  if ([...info.excludedDepts].some((dep) => staffMember.dept && staffMember.dept.includes(dep))) return false;
+  if (info.electionDutyExcludedToday && staffMember.electionDuty) return false;
+  if (info.bannedBySpecial.has(staffMember.id)) return false;
+  return true;
+}
+function buildOptimizeContext(params) {
+  const {
+    results = [], staffList = [], monthRules = [], eventExclusions = [], history = [],
+    minGapDays = 0, newHireMonths = 0, specialLookback = 2, pairLookbackYears = 2,
+    standingExcludedDepts = [], leaves = [], retireLeadMonths = 1, periodId = null,
+  } = params;
+  const staffById = new Map(staffList.map((s) => [s.id, s]));
+  const targetStaff = staffList.filter(
+    (s) => s.active !== false && !!s.gender && !isStandingExcluded(s, standingExcludedDepts)
+  );
+  const targetIds = new Set(targetStaff.map((s) => s.id));
+
+  const specialUseFromHistory = new Map();
+  history.forEach((h) => {
+    if (!h.specialPeriodKey) return;
+    if (!specialUseFromHistory.has(h.specialPeriodKey)) specialUseFromHistory.set(h.specialPeriodKey, new Set());
+    [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => specialUseFromHistory.get(h.specialPeriodKey).add(id));
+  });
+
+  const dayInfo = new Map();
+  const zoneGenderByDate = new Map();
+  results.forEach((r) => {
+    const date = parseISO(r.date);
+    const month = date.getMonth() + 1;
+    const excludedDepts = new Set();
+    let electionDutyExcludedToday = false;
+    monthRules.forEach((rule) => {
+      if (rule.months.includes(month)) rule.depts.forEach((d) => excludedDepts.add(d));
+    });
+    eventExclusions.forEach((e) => {
+      const start = parseISO(e.date);
+      const end = parseISO(e.endDate || e.date);
+      if (date >= start && date <= end) {
+        (e.depts || []).forEach((d) => excludedDepts.add(d));
+        if (e.targetElectionDuty) electionDutyExcludedToday = true;
+      }
+    });
+    const special = detectSpecialPeriod(date);
+    const bannedBySpecial = new Set();
+    if (special) {
+      previousSpecialKeys(special.key, specialLookback).forEach((k) => {
+        const set = specialUseFromHistory.get(k);
+        if (set) set.forEach((id) => bannedBySpecial.add(id));
+      });
+    }
+    dayInfo.set(r.date, { date, excludedDepts, electionDutyExcludedToday, bannedBySpecial, currentFY: fiscalYearOf(date) });
+    // その日の性別ゾーン（作成時に割り当てられた性別）。この後の入替えでも変更しない
+    const zone = [r.seniorId, r.juniorId]
+      .filter(Boolean)
+      .map((id) => (staffById.get(id) || {}).gender)
+      .find(Boolean);
+    zoneGenderByDate.set(r.date, zone || null);
+  });
+
+  const historyDatesByPerson = new Map();
+  const periodHistoryCount = new Map();
+  history.forEach((h) => {
+    [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => {
+      if (!historyDatesByPerson.has(id)) historyDatesByPerson.set(id, []);
+      historyDatesByPerson.get(id).push(h.date);
+      if (periodId && h.periodId === periodId) periodHistoryCount.set(id, (periodHistoryCount.get(id) || 0) + 1);
+    });
+  });
+  historyDatesByPerson.forEach((arr) => arr.sort());
+
+  return {
+    staffById, targetStaff, targetIds, dayInfo, zoneGenderByDate, historyDatesByPerson, periodHistoryCount,
+    pairLastFY: buildPairLastFiscalYear(history),
+    minGapDays, newHireMonths, pairLookbackYears, leaves, retireLeadMonths, periodId,
+  };
+}
+function buildOptimizeState(results) {
+  const records = results.map((r) => ({ ...r }));
+  const recordByDate = new Map(records.map((r) => [r.date, r]));
+  const datesByPerson = new Map();
+  const pairCounts = new Map();
+  records.forEach((r) => {
+    [r.seniorId, r.juniorId].filter(Boolean).forEach((id) => {
+      if (!datesByPerson.has(id)) datesByPerson.set(id, []);
+      datesByPerson.get(id).push(r.date);
+    });
+    if (r.seniorId && r.juniorId) {
+      const k = pairKey(r.seniorId, r.juniorId);
+      pairCounts.set(k, (pairCounts.get(k) || 0) + 1);
+    }
+  });
+  datesByPerson.forEach((arr) => arr.sort());
+  let dupPenalty = 0;
+  pairCounts.forEach((c) => { if (c > 1) dupPenalty += (c - 1) * OPT_WEIGHTS.pairRepeat; });
+  return { records, recordByDate, datesByPerson, pairCounts, dupPenalty };
+}
+/** 第1段階：今期0回の職員を、空き枠または担当回数の多い職員の枠に入れる */
+function optPhaseInsertUnassigned(state, ctx, log) {
+  let improved = false;
+  const unassigned = ctx.targetStaff.filter((s) => optPeriodCount(s.id, ctx, state) === 0);
+  for (const person of unassigned) {
+    let placed = false;
+    for (const rec of state.records) {
+      if (placed) break;
+      if (!rec.seniorId && !rec.juniorId) continue; // 2枠とも空の日は性別ゾーンが定まらないため対象外
+      if (rec.seniorId === person.id || rec.juniorId === person.id) continue;
+      for (const level of ['senior', 'junior']) {
+        if (!optCanPlace(person, rec, level, ctx)) continue;
+        const fromId = level === 'senior' ? rec.seniorId : rec.juniorId;
+        if (optTryMove(state, ctx, [{ date: rec.date, level, to: person.id }])) {
+          log.push({ type: fromId ? 'replace' : 'fill', date: rec.date, level, fromId: fromId || null, toId: person.id });
+          improved = true;
+          placed = true;
+          break;
+        }
+      }
+    }
+  }
+  return improved;
+}
+/** 第2段階：担当回数が多い職員の枠を、担当回数の少ない職員に譲る */
+function optPhaseRebalance(state, ctx, log) {
+  let improved = false;
+  const withCount = ctx.targetStaff.map((s) => ({ s, n: optPeriodCount(s.id, ctx, state) }));
+  const heavy = withCount.filter((x) => x.n >= 2).sort((a, b) => b.n - a.n || (a.s.id < b.s.id ? -1 : 1));
+  const light = withCount.filter((x) => x.n <= 1).sort((a, b) => a.n - b.n || (a.s.id < b.s.id ? -1 : 1));
+  if (!light.length) return false;
+  for (const h of heavy) {
+    const dates = [...(state.datesByPerson.get(h.s.id) || [])];
+    for (const date of dates) {
+      const rec = state.recordByDate.get(date);
+      if (!rec) continue;
+      const level = rec.seniorId === h.s.id ? 'senior' : rec.juniorId === h.s.id ? 'junior' : null;
+      if (!level) continue;
+      for (const l of light) {
+        if (l.s.id === h.s.id) continue;
+        if (!optCanPlace(l.s, rec, level, ctx)) continue;
+        if (optTryMove(state, ctx, [{ date, level, to: l.s.id }])) {
+          log.push({ type: 'replace', date, level, fromId: h.s.id, toId: l.s.id });
+          improved = true;
+          break;
+        }
+      }
+    }
+  }
+  return improved;
+}
+/** 第3段階：要確認が付いている日について、同じ性別ゾーンの別の日と担当を交換して質を上げる */
+function optPhaseSwapQuality(state, ctx, log) {
+  let improved = false;
+  const flagged = state.records.filter((r) => r.seniorId && r.juniorId && optDayCost(r, ctx, state) > 0);
+  for (const rec of flagged) {
+    for (const level of ['senior', 'junior']) {
+      const myId = level === 'senior' ? rec.seniorId : rec.juniorId;
+      const me = myId ? ctx.staffById.get(myId) : null;
+      if (!me) continue;
+      let done = false;
+      for (const other of state.records) {
+        if (done) break;
+        if (other.date === rec.date) continue;
+        if (ctx.zoneGenderByDate.get(other.date) !== ctx.zoneGenderByDate.get(rec.date)) continue;
+        for (const otherLevel of ['senior', 'junior']) {
+          const otherId = otherLevel === 'senior' ? other.seniorId : other.juniorId;
+          if (!otherId || otherId === myId) continue;
+          const them = ctx.staffById.get(otherId);
+          if (!them) continue;
+          if (!optCanPlace(them, rec, level, ctx)) continue;
+          if (!optCanPlace(me, other, otherLevel, ctx)) continue;
+          if (
+            optTryMove(state, ctx, [
+              { date: rec.date, level, to: otherId },
+              { date: other.date, level: otherLevel, to: myId },
+            ])
+          ) {
+            log.push({ type: 'swap', date: rec.date, level, fromId: myId, toId: otherId, date2: other.date, level2: otherLevel });
+            improved = true;
+            done = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return improved;
+}
+/** 入替え後の日について、最終的な組合せから「状態」と「理由」を作り直す */
+function optRecomputeReason(rec, ctx, state) {
+  if (!rec) return;
+  const s = rec.seniorId ? ctx.staffById.get(rec.seniorId) : null;
+  const j = rec.juniorId ? ctx.staffById.get(rec.juniorId) : null;
+  const filled = (rec.seniorId ? 1 : 0) + (rec.juniorId ? 1 : 0);
+  const reasons = [];
+  if (filled === 0) {
+    reasons.push('対象者がいません（休暇・除外等により、この日に割当可能な職員が1人もいません）');
+  } else if (filled === 1) {
+    reasons.push('人数不足のため1名のみの割当です（相方となる対象者がいません）');
+  } else if (s && j) {
+    const info = ctx.dayInfo.get(rec.date);
+    const members = [s, j];
+    if (members.some((p) => optPeriodCount(p.id, ctx, state) >= 2)) reasons.push('同一処理期内で2回目の割当です');
+    const gapMembers = members.filter((p) => optHasGapViolationAt(p.id, rec.date, ctx, state));
+    if (gapMembers.length) {
+      reasons.push(
+        gapMembers.every((p) => optPeriodCount(p.id, ctx, state) === 1)
+          ? `前回勤務日から${ctx.minGapDays}日未満ですが、今期まだ一度も割り当てていない職員を優先したため割り当てました`
+          : `前回勤務日から${ctx.minGapDays}日未満の職員を含みます（人数不足のため）`
+      );
+    }
+    if (s.level !== 'senior' && j.level !== 'senior') reasons.push('係長級が含まれていません（人数不足のため）');
+    if (!isQualified(s) && !isQualified(j)) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
+    if (s.dept && j.dept && s.dept === j.dept) reasons.push('同一課の組合せになっています');
+    if (s.level === 'senior' && j.level === 'senior' && isSeniorTitleClash(s, j)) reasons.push('課長補佐・副主幹の組合せになっています');
+    if (
+      (info && isPairBanned(s.id, j.id, ctx.pairLastFY, info.currentFY, ctx.pairLookbackYears)) ||
+      optPairDuplicated(state, s.id, j.id)
+    ) {
+      reasons.push('過去のペアと重複しています');
+    }
+    if (info && info.electionDutyExcludedToday && members.some((p) => p.electionDuty)) {
+      reasons.push('選挙管理委員会事務局（併任）の職員を人数不足のため特例的に割り当てました');
+    }
+  }
+  rec.reason = reasons.join(' / ');
+  rec.status = filled < 2 ? 'error' : reasons.length ? 'warning' : 'ok';
+}
+function optSnapshotStats(state, ctx) {
+  const stats = {
+    unassigned: 0, threeOrMore: 0, emptySlots: 0, gapViolations: 0,
+    noSenior: 0, unqualified: 0, sameDept: 0, titleClash: 0, pairRepeat: 0, errorDays: 0,
+  };
+  ctx.targetStaff.forEach((s) => {
+    const n = optPeriodCount(s.id, ctx, state);
+    if (n === 0) stats.unassigned++;
+    if (n >= 3) stats.threeOrMore++;
+    stats.gapViolations += optGapViolations(s.id, ctx, state);
+  });
+  state.records.forEach((r) => {
+    const filled = (r.seniorId ? 1 : 0) + (r.juniorId ? 1 : 0);
+    stats.emptySlots += 2 - filled;
+    if (filled < 2) stats.errorDays++;
+    const s = r.seniorId ? ctx.staffById.get(r.seniorId) : null;
+    const j = r.juniorId ? ctx.staffById.get(r.juniorId) : null;
+    if (!s || !j) return;
+    if (s.level !== 'senior' && j.level !== 'senior') stats.noSenior++;
+    if (!isQualified(s) && !isQualified(j)) stats.unqualified++;
+    if (s.dept && j.dept && s.dept === j.dept) stats.sameDept++;
+    if (s.level === 'senior' && j.level === 'senior' && isSeniorTitleClash(s, j)) stats.titleClash++;
+    const info = ctx.dayInfo.get(r.date);
+    if ((info && isPairBanned(s.id, j.id, ctx.pairLastFY, info.currentFY, ctx.pairLookbackYears)) || optPairDuplicated(state, s.id, j.id)) {
+      stats.pairRepeat++;
+    }
+  });
+  return stats;
+}
+/**
+ * 作成済みの勤務表（generateAssignments の結果）を、絶対条件を崩さない入替えだけで改善する。
+ * 戻り値の results は新しい配列（元の配列は変更しない）。summary に改善内容を返す。
+ */
+function optimizeAssignments(params) {
+  const source = params.results || [];
+  const ctx = buildOptimizeContext(params);
+  const state = buildOptimizeState(source);
+  if (!source.length) {
+    return { results: state.records, summary: { rounds: 0, moves: [], before: optSnapshotStats(state, ctx), after: optSnapshotStats(state, ctx), addedStaff: [], stillUnassigned: [] } };
+  }
+  const before = optSnapshotStats(state, ctx);
+  const wasUnassigned = new Set(ctx.targetStaff.filter((s) => optPeriodCount(s.id, ctx, state) === 0).map((s) => s.id));
+
+  const log = [];
+  let rounds = 0;
+  let improved = true;
+  while (improved && rounds < OPT_MAX_ROUNDS) {
+    improved = false;
+    rounds++;
+    if (optPhaseInsertUnassigned(state, ctx, log)) improved = true;
+    if (optPhaseRebalance(state, ctx, log)) improved = true;
+    if (optPhaseSwapQuality(state, ctx, log)) improved = true;
+  }
+
+  // 入替えのあった日と、担当が動いた職員が関わるすべての日について、理由と状態を作り直す
+  const touchedDates = new Set();
+  const touchedPeople = new Set();
+  log.forEach((m) => {
+    touchedDates.add(m.date);
+    if (m.date2) touchedDates.add(m.date2);
+    if (m.fromId) touchedPeople.add(m.fromId);
+    if (m.toId) touchedPeople.add(m.toId);
+  });
+  state.records.forEach((r) => {
+    if ((r.seniorId && touchedPeople.has(r.seniorId)) || (r.juniorId && touchedPeople.has(r.juniorId))) touchedDates.add(r.date);
+  });
+  touchedDates.forEach((d) => optRecomputeReason(state.recordByDate.get(d), ctx, state));
+
+  const after = optSnapshotStats(state, ctx);
+  const nameOf = (id) => (ctx.staffById.get(id) || {}).name || '';
+  return {
+    results: state.records,
+    summary: {
+      rounds,
+      before,
+      after,
+      moves: log.map((m) => ({
+        type: m.type,
+        date: m.date,
+        level: m.level,
+        fromName: m.fromId ? nameOf(m.fromId) : '',
+        toName: m.toId ? nameOf(m.toId) : '',
+        date2: m.date2 || null,
+      })),
+      addedStaff: [...wasUnassigned]
+        .filter((id) => optPeriodCount(id, ctx, state) > 0)
+        .map((id) => nameOf(id)),
+      stillUnassigned: ctx.targetStaff.filter((s) => optPeriodCount(s.id, ctx, state) === 0).map((s) => s.name),
+    },
+  };
 }
 
 /* ------------------------------------------------------------
@@ -1092,6 +1668,7 @@ if (typeof module !== 'undefined' && module.exports) {
     pairKey,
     isSeniorTitleClash,
     generateAssignments,
+    optimizeAssignments,
     explainUnassignedStaff,
     WEEKDAY_LABEL,
     GENDER_LABEL,

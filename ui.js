@@ -572,6 +572,7 @@ let genConfirmBatchId = null; // 確定時に発行するID。引き戻し時に
 let genConfirmedAt = null; // 確定（決裁）日時
 let genApprovalChecked = false; // 「決裁が完了したことを確認しました」チェックの状態
 let genLog = []; // 引き戻しにより解除された過去の確定内容（作成履歴）
+let genOptimizeSummary = null; // 作成後の見直し（optimizeAssignments）の結果サマリ
 let genFrozenUnassignedHtml = null; // 確定時点の「未割当職員」表示のスナップショット（確定後は再計算せずこれを表示する）
 let genFrozenOverburdenedHtml = null; // 確定時点の「担当回数が多い職員」表示のスナップショット
 let staffXlsxRows = null; // Excel名簿取込：解析結果の一時保持
@@ -2037,6 +2038,7 @@ function renderGenResultTable() {
       draftResults[idx][level + 'Id'] = s ? s.id : null;
       draftResults[idx][level + 'Name'] = s ? s.name : '';
       affectedIdxs.forEach((i) => revalidateDraftResult(i));
+      genOptimizeSummary = null; // 手動で入れ替えたら、作成直後の見直しサマリは実態と合わなくなるため消す
       genApprovalChecked = false;
       saveGenSession();
       renderGenResultTable();
@@ -2088,6 +2090,9 @@ function renderGenResultTable() {
     ? `<p class="hint">合計 ${draftResults.length} 日 / 要確認 ${warnCount} 日${errorCount ? ` / <strong style="color:var(--danger)">人数不足エラー ${errorCount} 日</strong>` : ''}</p>`
     : '';
 
+  const optEl = document.getElementById('gen-optimize-summary');
+  if (optEl) optEl.innerHTML = draftResults.length ? computeOptimizeSummaryHtml() : '';
+
   const unassignedEl = document.getElementById('gen-unassigned-summary');
   const overEl = document.getElementById('gen-overburdened-summary');
   if (locked && (genFrozenUnassignedHtml !== null || genFrozenOverburdenedHtml !== null)) {
@@ -2102,6 +2107,41 @@ function renderGenResultTable() {
   document.getElementById('gen-export').disabled = draftResults.length === 0;
   document.getElementById('gen-pdf').disabled = draftResults.length === 0;
   renderGenApprovalUi();
+}
+/** 作成後の見直し（optimizeAssignments）で何がどれだけ良くなったかを表示するHTML。
+ *  絶対条件（同性ペア・所属除外・育休等）を崩す入替えは一切行われないため、
+ *  ここに出るのは「同じ条件のまま、より良い組合せに入れ替えた結果」だけ。 */
+function computeOptimizeSummaryHtml() {
+  const s = genOptimizeSummary;
+  if (!s || !s.moves) return '';
+  if (!s.moves.length) {
+    return '<p style="margin:0">作成後の見直しを行いました。<strong>入れ替えたほうが良い組合せは見つかりませんでした</strong>（すでに条件の範囲で最も良い状態です）。</p>';
+  }
+  const b = s.before || {};
+  const a = s.after || {};
+  const rows = [
+    ['1回も割り当てられていない職員', b.unassigned, a.unassigned],
+    ['同一課の組合せ', b.sameDept, a.sameDept],
+    ['課長補佐・副主幹の組合せ', b.titleClash, a.titleClash],
+    ['過去のペアと重複', b.pairRepeat, a.pairRepeat],
+    ['最低間隔日数を下回る間隔', b.gapViolations, a.gapViolations],
+    ['3回以上担当する職員', b.threeOrMore, a.threeOrMore],
+    ['係長級が含まれない日', b.noSenior, a.noSenior],
+    ['2名を埋められない日', b.errorDays, a.errorDays],
+  ].filter(([, x, y]) => x != null && y != null && x !== y);
+  const changed = rows.length
+    ? `<ul style="margin:4px 0 0;padding-left:20px;font-weight:normal">${rows
+        .map(([label, x, y]) => `<li>${escapeHtml(label)}：${x} → <strong>${y}</strong>${y < x ? '' : '（増加）'}</li>`)
+        .join('')}</ul>`
+    : '';
+  const added = s.addedStaff && s.addedStaff.length
+    ? `<p style="margin:6px 0 0">この見直しで新たに担当が付いた職員：<strong>${s.addedStaff.map(escapeHtml).join('、')}</strong></p>`
+    : '';
+  return (
+    `<p style="margin:0;font-weight:600">作成後の見直しで ${s.moves.length} 件を入れ替えました</p>` +
+    changed +
+    added
+  );
 }
 /** 「今期まだ割り当てられていない対象職員」サマリのHTMLを、現在のstaff/historyから計算する */
 function computeUnassignedSummaryHtml() {
@@ -2263,6 +2303,7 @@ function swapDraftResultSlots(a, b) {
   rb[b.level + 'Name'] = aName;
   revalidateDraftResult(a.idx);
   if (b.idx !== a.idx) revalidateDraftResult(b.idx);
+  genOptimizeSummary = null; // 手動で入れ替えたら、作成直後の見直しサマリは実態と合わなくなるため消す
 }
 
 function initGenerateRun() {
@@ -2276,7 +2317,7 @@ function initGenerateRun() {
       alert('対象の指定日がありません。まず「土日・祝日・年末年始を自動抽出」を実行してください。');
       return;
     }
-    draftResults = generateAssignments({
+    const genParams = {
       staffList: staff,
       dutyDates: targetDates,
       monthRules,
@@ -2290,7 +2331,12 @@ function initGenerateRun() {
       leaves: effectiveLeavesForPeriod(currentPeriod()),
       retireLeadMonths: settings.retireLeadMonths,
       periodId: currentPeriod().id,
-    });
+    };
+    const firstPass = generateAssignments(genParams);
+    // 作成し終わった勤務表全体を見直し、絶対条件を崩さない入替えだけで質を上げる
+    const optimized = optimizeAssignments({ ...genParams, results: firstPass });
+    draftResults = optimized.results;
+    genOptimizeSummary = optimized.summary;
     genApprovalChecked = false;
     saveGenSession();
     renderGenResultTable();
@@ -2400,6 +2446,7 @@ function saveGenSession() {
     confirmBatchId: genConfirmBatchId,
     confirmedAt: genConfirmedAt,
     log: genLog,
+    optimizeSummary: genOptimizeSummary,
     frozenUnassignedHtml: genFrozenUnassignedHtml,
     frozenOverburdenedHtml: genFrozenOverburdenedHtml,
   };
@@ -2416,6 +2463,7 @@ function loadGenSessionForCurrentPeriod() {
   genConfirmBatchId = (s && s.confirmBatchId) || null;
   genConfirmedAt = (s && s.confirmedAt) || null;
   genLog = (s && s.log) || [];
+  genOptimizeSummary = (s && s.optimizeSummary) || null;
   genFrozenUnassignedHtml = (s && s.frozenUnassignedHtml) || null;
   genFrozenOverburdenedHtml = (s && s.frozenOverburdenedHtml) || null;
 }
