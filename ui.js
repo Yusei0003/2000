@@ -931,38 +931,6 @@ function initStaffSearch() {
 }
 
 function initStaffForm() {
-  document.getElementById('staff-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const number = document.getElementById('st-number').value.trim();
-    const carry = number ? previousPeriodStaffMap().get(number) : null;
-    const rec = {
-      id: number ? idForNumber(number) : uid('st'),
-      number,
-      name: document.getElementById('st-name').value.trim(),
-      level: document.getElementById('st-level').value,
-      gender: null,
-      rank: (carry && carry.rank) || RANK_BY_TITLE[document.getElementById('st-title').value.trim()] || null,
-      title: document.getElementById('st-title').value.trim(),
-      dept: document.getElementById('st-dept').value.trim(),
-      section: document.getElementById('st-section').value.trim(),
-      sideJob: document.getElementById('st-sidejob').value.trim(),
-      hireDate: document.getElementById('st-hire').value || null,
-      retireDate: document.getElementById('st-retire').value || (carry && carry.retireDate) || null,
-      deptHistory: [],
-      citizenExp: document.getElementById('st-citizen').checked || !!(carry && carry.citizenExp),
-      dispatched: !!(carry && carry.dispatched),
-      seventyPercent: !!(carry && carry.seventyPercent),
-      electionDuty: document.getElementById('st-election-duty').checked || !!(carry && carry.electionDuty),
-      active: document.getElementById('st-active').checked,
-    };
-    if (!rec.name || !rec.dept) return;
-    staff.push(rec);
-    savePeriodStaff();
-    renderStaffTable();
-    e.target.reset();
-    document.getElementById('st-active').checked = true;
-    showToast('職員を追加しました');
-  });
 
   document.getElementById('staff-import-btn').addEventListener('click', () => {
     document.getElementById('staff-import-box').classList.toggle('hidden');
@@ -1486,7 +1454,41 @@ function parseMaternityWorkbook(workbook) {
   }
   return null;
 }
-/** 育休・産休Excelの解析結果を育休等除外期間（leaves）へ取り込む共通処理。
+/** 病気休暇Excelを解析する（職員番号・氏名・病名・開始・終了の列を読む）
+ *  「区分」欄には病名をそのまま表示するため、category に病名の文字列をそのまま入れる */
+function parseSickLeaveWorkbook(workbook) {
+  for (const sheetName of workbook.SheetNames) {
+    const rows = sheetRows(workbook.Sheets[sheetName]);
+    const headerRowIdx = rows.findIndex(
+      (r) =>
+        r.some((c) => normalizeHeader(c) === '職員番号') &&
+        r.some((c) => normalizeHeader(c) === '病名') &&
+        r.some((c) => normalizeHeader(c) === '開始')
+    );
+    if (headerRowIdx === -1) continue;
+    const headerRow = rows[headerRowIdx].map(normalizeHeader);
+    const col = (name) => headerRow.indexOf(name);
+    const idxNumber = col('職員番号');
+    const idxName = col('氏名');
+    const idxDisease = col('病名');
+    const idxStart = col('開始');
+    const idxEnd = col('終了');
+    if (idxNumber === -1 || idxStart === -1) continue;
+    return rows
+      .slice(headerRowIdx + 1)
+      .filter((r) => r[idxNumber] !== null && r[idxNumber] !== undefined && r[idxNumber] !== '')
+      .map((r) => ({
+        staffNumber: String(r[idxNumber]).trim(),
+        name: idxName >= 0 ? String(r[idxName] || '').trim() : '',
+        category: idxDisease >= 0 ? String(r[idxDisease] || '').trim() : '病気休暇',
+        startDate: excelValueToISO(r[idxStart]),
+        endDate: idxEnd >= 0 ? excelValueToISO(r[idxEnd]) : null,
+      }))
+      .filter((r) => r.startDate);
+  }
+  return null;
+}
+/** 育休・産休・病気休暇Excelの解析結果を育休等除外期間（leaves）へ取り込む共通処理。
  *  名簿にない職員番号（会計年度任用職員等）の行は取込対象外とする */
 function importLeaveRows(rows, kindLabel) {
   let added = 0;
@@ -1566,30 +1568,30 @@ function initMaternityXlsxImport() {
     });
   });
 }
+function initSickLeaveXlsxImport() {
+  const input = document.getElementById('sick-leave-xlsx-input');
+  if (!input) return;
+  input.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    readWorkbookFile(file, (err, workbook) => {
+      e.target.value = '';
+      if (err) {
+        alert('ファイルの読み込みに失敗しました：' + err.message);
+        return;
+      }
+      const rows = parseSickLeaveWorkbook(workbook);
+      if (!rows || !rows.length) {
+        alert('病気休暇データの列（職員番号・病名・開始など）が見つかりませんでした。ファイル形式をご確認ください。');
+        return;
+      }
+      importLeaveRows(rows, '病気休暇');
+    });
+  });
+}
 
 function initLeaveForm() {
   renderLeaveTable();
-  document.getElementById('leave-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const staffNumber = document.getElementById('lv-number').value.trim();
-    const category = document.getElementById('lv-category').value.trim();
-    const startDate = document.getElementById('lv-start').value;
-    const endDate = document.getElementById('lv-end').value || null;
-    if (!staffNumber || !startDate) return;
-    if (!staff.some((s) => String(s.number) === staffNumber)) {
-      alert(`職員番号「${staffNumber}」は名簿に登録されていません。名簿にある職員番号のみ登録できます。`);
-      return;
-    }
-    if (endDate && startDate > endDate) {
-      alert('終了日は開始日以降の日付にしてください。');
-      return;
-    }
-    leaves.push({ id: uid('lv'), staffNumber, startDate, endDate, category, importedName: '' });
-    save(KEY_LEAVES, leaves);
-    renderLeaveTable();
-    e.target.reset();
-    showToast('除外期間を登録しました');
-  });
 }
 
 /** 常時除外する所属：名簿に登録済みの所属（所属CD順）をチェックボックスで表示する */
@@ -3793,6 +3795,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initHistoryBulkDelete();
   initLeaveXlsxImport();
   initMaternityXlsxImport();
+  initSickLeaveXlsxImport();
   initPeriodBar();
   initDocsTab();
   initHelpToggle();

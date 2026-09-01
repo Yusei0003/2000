@@ -629,12 +629,45 @@ function generateAssignments({
       return { seniorPool, juniorPool, combinedPool, pair, relaxedStage, repeat };
     };
 
+    /** 今期まだ一度も割り当てていない職員が、最低間隔日数（既定120日）だけで対象外になって
+     *  いる場合に限り、既に割り当て済みの職員（2回目）へ回す前に、最低間隔日数だけを緩和して
+     *  その職員を優先的に割り当てる（「同一処理期内1人1回」を「厳格な最低間隔日数」より
+     *  優先する）。同性ペア・所属除外・育休等の絶対条件は一切緩和しない。呼び出し元で
+     *  「要確認」の理由表示に使う（forcedFreshGapUsed）。 */
+    const tryGenderFreshIgnoreGap = (gender) => {
+      if (!periodId) return { pair: null, relaxedStage: 0 };
+      const seniorPool = sortCandidates(eligibleBase('senior', gender, true, false), countMap, lastDateMap, remainingOpportunityMap);
+      const juniorPool = sortCandidates(eligibleBase('junior', gender, true, false), countMap, lastDateMap, remainingOpportunityMap);
+      const combinedPool = sortByCountAndRecency(interleave(seniorPool, juniorPool), countMap, lastDateMap, remainingOpportunityMap);
+      const searchSeniorPool = seniorPool.filter((s) => !periodUsedIds.has(s.id));
+      const searchCombinedPool = combinedPool.filter((s) => !periodUsedIds.has(s.id));
+      let pair = null;
+      let relaxedStage = 0;
+      for (let i = 0; i < stages.length; i++) {
+        pair = findPair(searchSeniorPool, searchCombinedPool, { ...stages[i], ...pairOpts });
+        if (pair) {
+          relaxedStage = i;
+          break;
+        }
+      }
+      return { pair, relaxedStage };
+    };
+
     /** 指定した性別に固定して、可能な限りその性別だけでその日を埋める。
-     *  includeFresh=true なら「今期未割当」から試す。見つからなければ「今期2回目」を試し、
-     *  それでも見つからなければ、係長級の有無・最低間隔日数（120日）も緩和した最終手段で
-     *  1名（無理なら相方なしの単独）まで探す（他方の性別には一切広げない）。 */
+     *  includeFresh=true なら「今期未割当」から試す。見つからなければ、今期未割当の職員に
+     *  限り最低間隔日数だけを緩和して再度探す（forcedFreshGapUsed）。それでも見つからなければ
+     *  「今期2回目」を試し、それでも見つからなければ、係長級の有無・最低間隔日数（120日）も
+     *  緩和した最終手段で1名（無理なら相方なしの単独）まで探す（他方の性別には一切広げない）。 */
     const searchGenderFull = (gender, includeFresh) => {
       let r = includeFresh ? tryGender(gender, false) : { pair: null, relaxedStage: 0, repeat: false };
+      let forcedFreshGapUsed = false;
+      if (!r.pair) {
+        const rFreshGap = tryGenderFreshIgnoreGap(gender);
+        if (rFreshGap.pair) {
+          r = { ...rFreshGap, repeat: false };
+          forcedFreshGapUsed = true;
+        }
+      }
       if (!r.pair) {
         const r2 = tryGender(gender, true);
         if (r2.pair) r = r2;
@@ -706,7 +739,7 @@ function generateAssignments({
           ((pair.senior && periodUsedIds.has(pair.senior.id)) || (pair.junior && periodUsedIds.has(pair.junior.id)))
         );
       }
-      return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap, forcedElectionDutyUsed };
+      return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap, forcedElectionDutyUsed, forcedFreshGapUsed };
     };
 
     // 性別ゾーン方式：女性ゾーンでは「女性・今期未割当」のみをまず試す（＝境界は「その日に
@@ -724,7 +757,7 @@ function generateAssignments({
     if (zoneToday === 'F') {
       const freshF = tryGender('F', false);
       if (freshF.pair) {
-        outcome = { ...freshF, forcedFallbackUsed: false, forcedNoSenior: false, forcedIgnoredGap: false, forcedElectionDutyUsed: false };
+        outcome = { ...freshF, forcedFallbackUsed: false, forcedNoSenior: false, forcedIgnoredGap: false, forcedElectionDutyUsed: false, forcedFreshGapUsed: false };
       } else {
         const maleFull = searchGenderFull('M', true);
         if (maleFull.pair) {
@@ -738,7 +771,7 @@ function generateAssignments({
       outcome = searchGenderFull('M', true);
     }
 
-    const { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap, forcedElectionDutyUsed } = outcome;
+    const { pair, relaxedStage, repeat, forcedFallbackUsed, forcedNoSenior, forcedIgnoredGap, forcedElectionDutyUsed, forcedFreshGapUsed } = outcome;
     const usedGenderToday = pair ? (pair.senior ? pair.senior.gender : pair.junior.gender) : null;
     if (usedGenderToday === 'F') femaleUsedThisPeriod = true;
     if (zoneToday === 'M' && femaleUsedThisPeriod && isFemaleExhausted()) genderZone = 'M';
@@ -762,6 +795,12 @@ function generateAssignments({
       if (!repeat && !forcedNoSenior && !forcedIgnoredGap && !forcedElectionDutyUsed) {
         reasons.push('人数不足のため、通常のルールを緩和して割り当てました');
       }
+    } else if (forcedFreshGapUsed) {
+      reasons.push(`前回勤務日から${minGapDays}日未満ですが、今期まだ一度も割り当てていない職員を優先したため割り当てました`);
+      if (relaxedStage >= 4) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
+      if (relaxedStage >= 3) reasons.push('同一課の組合せになっています');
+      if (relaxedStage >= 2) reasons.push('課長補佐・副主幹の組合せになっています');
+      if (relaxedStage >= 1) reasons.push('過去のペアと重複しています');
     } else {
       if (repeat) reasons.push('同一処理期内で2回目の割当です');
       if (relaxedStage >= 4) reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
