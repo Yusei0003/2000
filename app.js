@@ -530,18 +530,24 @@ function generateAssignments({
   });
 
   /* --------------------------------------------------------
-   * 残り出番機会（この処理期内で、静的な制約だけを見た割当可能日数）
+   * 残り出番機会（その日以降に、静的な制約だけを見て何日割当可能か）
    * 課除外ルール・行事除外（選挙管理委員会併任の除外を含む）・育休等・
    * 退職予定日・新規採用の除外のみで数える。性別ゾーン・120日間隔・
    * ペア重複・特別期間の重複回避など、割当の進行に応じて変わる動的な
    * 制約は含めない（事前に一度だけ計算できないため）。
    * 課除外や行事に当たりやすく出番の窓が狭い職員を、割当の並び替えで
    * 優先的に使うために利用する（sortByCountAndRecency 参照）。
+   *
+   * 処理期全体の固定値ではなく「その日以降の残り日数」として日ごとに
+   * 更新する。固定値だと、窓が8月にしかない職員でも4月時点と8月直前とで
+   * 優先度が変わらず、窓が閉じる直前に優先されないまま処理期が終わって
+   * しまうため（＝窓のうちに割り当てられない）。
    * -------------------------------------------------------- */
-  const remainingOpportunityMap = new Map();
+  const eligibleDatesByStaff = new Map(); // 職員ID → 静的な条件だけで見た割当可能日（日付順）
   activeStaff.forEach((s) => {
-    let count = 0;
-    dayContextByDate.forEach(({ date, excludedDepts, electionDutyExcludedToday }) => {
+    const dates = [];
+    sorted.forEach((dd) => {
+      const { date, excludedDepts, electionDutyExcludedToday } = dayContextByDate.get(dd.date);
       if (
         !isOnLeave(s, date, leaves) &&
         passesRetire(s, date, retireLeadMonths) &&
@@ -549,11 +555,27 @@ function generateAssignments({
         ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
         !(electionDutyExcludedToday && s.electionDuty)
       ) {
-        count++;
+        dates.push(dd.date);
       }
     });
-    remainingOpportunityMap.set(s.id, count);
+    eligibleDatesByStaff.set(s.id, dates);
   });
+  const remainingOpportunityMap = new Map();
+  const opportunityCursor = new Map();
+  activeStaff.forEach((s) => {
+    remainingOpportunityMap.set(s.id, (eligibleDatesByStaff.get(s.id) || []).length);
+    opportunityCursor.set(s.id, 0);
+  });
+  /** 残り出番機会を「その日以降の割当可能日数」に更新する（日付順に進むため単調に減る） */
+  const updateRemainingOpportunities = (todayISO) => {
+    activeStaff.forEach((s) => {
+      const dates = eligibleDatesByStaff.get(s.id) || [];
+      let i = opportunityCursor.get(s.id) || 0;
+      while (i < dates.length && dates[i] < todayISO) i++;
+      opportunityCursor.set(s.id, i);
+      remainingOpportunityMap.set(s.id, dates.length - i);
+    });
+  };
 
   /* --------------------------------------------------------
    * 性別ゾーン（女性ゾーン→男性ゾーンの一方向ラッチ）
@@ -595,6 +617,8 @@ function generateAssignments({
   sorted.forEach((dd) => {
     const { date, excludedDepts, electionDutyExcludedToday } = dayContextByDate.get(dd.date);
     const currentFY = fiscalYearOf(date);
+    // 出番の窓が閉じかけている職員を、その窓のうちに優先できるよう「残り出番機会」を更新する
+    updateRemainingOpportunities(dd.date);
 
     const special = detectSpecialPeriod(date);
     let bannedBySpecial = new Set();
@@ -1082,6 +1106,7 @@ function generateAssignments({
  * ------------------------------------------------------------ */
 const OPT_WEIGHTS = {
   unassigned: 1000, // 今期0回の職員1人あたり
+  narrowWindow: 200, // 今期0回の職員のうち、出番の窓が狭い職員への上乗せ（窓の日数で割った値を加える）
   emptySlot: 500, // 埋まっていない枠1つあたり
   unqualified: 400, // 資格要件（係長級・市民課経験者）を満たさない日（新たに作ることは禁止）
   noSenior: 200, // 係長級が1人も含まれない日（市民課経験者が資格を満たしていれば可。基本の形ではないため減点）
@@ -1161,10 +1186,19 @@ function optHasGapViolationAt(id, date, ctx, state) {
   const all = [...new Set([...(ctx.historyDatesByPerson.get(id) || []), ...(state.datesByPerson.get(id) || [])])];
   return all.some((d) => d !== date && Math.abs(diffDays(parseISO(d), target)) < ctx.minGapDays);
 }
+/** 今期0回の職員を1人減らす価値。出番の窓（置ける日数）が狭い職員ほど大きくする。
+ *  窓が2日しかない職員と、まだ他に何日も入れる職員とを同じ1000で評価すると、
+ *  その2日を後者に取られたときの入替えがコスト中立（±0）になって採用されず、
+ *  窓が狭い職員だけが0回のまま終わってしまうため。 */
+function optUnassignedCost(id, ctx) {
+  const win = ctx.windowSizeById ? ctx.windowSizeById.get(id) || 0 : 0;
+  if (win <= 0) return OPT_WEIGHTS.unassigned; // どこにも置けない職員は上乗せしない
+  return OPT_WEIGHTS.unassigned + Math.round(OPT_WEIGHTS.narrowWindow / win);
+}
 function optPersonCost(id, ctx, state) {
   if (!ctx.targetIds.has(id)) return 0;
   const total = optPeriodCount(id, ctx, state);
-  if (total === 0) return OPT_WEIGHTS.unassigned;
+  if (total === 0) return optUnassignedCost(id, ctx);
   return Math.pow(total - 1, 2) * OPT_WEIGHTS.overAssign + optGapPenalty(id, ctx, state) * OPT_WEIGHTS.gapShortfall;
 }
 function optDayCost(rec, ctx, state) {
@@ -1401,6 +1435,31 @@ function buildOptimizeContext(params) {
     zoneGenderByDate.set(r.date, zone || null);
   });
 
+  /* その職員を実際に置ける日数（＝出番の窓の広さ）。性別ゾーンと、割当の進行では
+   * 変わらない条件（育休等・所属除外・行事除外・選挙管理委員会併任・新規採用・
+   * 退職予定日・年末年始GWの重複回避）だけで数える。
+   * 月別課除外や行事の除外期間に当たりやすい職員は、置ける日が数日しかないことが多く、
+   * その数日を担当回数の多い職員に先に取られると、以後どこにも入れられなくなる。
+   * 見直し（最適化）では、この窓が狭い職員から先に席を確保する（optPhaseInsertUnassigned・
+   * optPhaseRebalance 参照）。 */
+  const windowSizeById = new Map();
+  targetStaff.forEach((s) => {
+    let n = 0;
+    results.forEach((r) => {
+      if (zoneGenderByDate.get(r.date) !== s.gender) return;
+      const info = dayInfo.get(r.date);
+      if (!info) return;
+      if (isOnLeave(s, info.date, leaves)) return;
+      if (!passesRetire(s, info.date, retireLeadMonths)) return;
+      if (!passesNewHire(s, info.date, newHireMonths)) return;
+      if ([...info.excludedDepts].some((dep) => s.dept && s.dept.includes(dep))) return;
+      if (info.electionDutyExcludedToday && s.electionDuty) return;
+      if (info.bannedBySpecial.has(s.id)) return;
+      n++;
+    });
+    windowSizeById.set(s.id, n);
+  });
+
   const historyDatesByPerson = new Map();
   const periodHistoryCount = new Map();
   history.forEach((h) => {
@@ -1417,7 +1476,7 @@ function buildOptimizeContext(params) {
   const optSpanDays = optDates.length > 1 ? diffDays(parseISO(optDates[0]), parseISO(optDates[optDates.length - 1])) : 0;
 
   return {
-    staffById, targetStaff, targetIds, dayInfo, zoneGenderByDate, historyDatesByPerson, periodHistoryCount,
+    staffById, targetStaff, targetIds, dayInfo, zoneGenderByDate, historyDatesByPerson, periodHistoryCount, windowSizeById,
     pairLastFY: buildPairLastFiscalYear(history),
     // 1人あたりの担当回数の目安（対象日数×2枠 ÷ 対象職員数）。これを超えた場合だけ要確認にする
     periodFairShare: optFairShare,
@@ -1455,7 +1514,16 @@ function buildOptimizeState(results) {
 /** 第1段階：今期0回の職員を、空き枠または担当回数の多い職員の枠に入れる */
 function optPhaseInsertUnassigned(state, ctx, log) {
   let improved = false;
-  const unassigned = ctx.targetStaff.filter((s) => optPeriodCount(s.id, ctx, state) === 0);
+  // 出番の窓が狭い職員（所属除外・行事除外・育休等で置ける日が数日しかない職員）から
+  // 先に席を確保する。窓が広い職員を先に入れると、その数日を先に埋められてしまい、
+  // 窓が狭い職員がどこにも入れられないまま終わってしまうため。
+  const unassigned = ctx.targetStaff
+    .filter((s) => optPeriodCount(s.id, ctx, state) === 0)
+    .sort(
+      (a, b) =>
+        (ctx.windowSizeById.get(a.id) || 0) - (ctx.windowSizeById.get(b.id) || 0) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    );
   for (const person of unassigned) {
     let placed = false;
     for (const rec of state.records) {
@@ -1500,7 +1568,13 @@ function optPhaseRebalance(state, ctx, log) {
       const lighter = withCount
         .map((x) => ({ s: x.s, n: optPeriodCount(x.s.id, ctx, state) }))
         .filter((x) => x.s.id !== h.s.id && x.n < myCount - 1)
-        .sort((a, b) => a.n - b.n || (a.s.id < b.s.id ? -1 : 1))
+        // 担当回数が同じなら、出番の窓が狭い職員（置ける日が少ない職員）に先に譲る
+        .sort(
+          (a, b) =>
+            a.n - b.n ||
+            (ctx.windowSizeById.get(a.s.id) || 0) - (ctx.windowSizeById.get(b.s.id) || 0) ||
+            (a.s.id < b.s.id ? -1 : 1)
+        )
         .sort((a, b) => {
           if (!onlySeniorHere) return 0;
           return (a.s.level === 'senior' ? 0 : 1) - (b.s.level === 'senior' ? 0 : 1);
