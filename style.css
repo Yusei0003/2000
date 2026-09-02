@@ -271,6 +271,7 @@ tbody td {
 }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr.row-warning { background: var(--warning-bg); }
+tbody tr.row-note { background: #f5f8fc; }
 tbody tr.row-error { background: var(--error-bg); color: var(--danger); font-weight: 600; }
 tbody tr.row-error td { border-bottom-color: var(--error-border); }
 tbody tr.check-detail-row td { white-space: normal; background: #f8fafc; font-size: 12px; color: var(--muted); }

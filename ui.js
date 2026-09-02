@@ -133,12 +133,21 @@ function escapeHtml(s) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[c]));
 }
-/** status: 'ok' | 'warning' | 'error'（'error' は人数不足で2名の枠を埋められなかったことを示す） */
+/** status: 'ok' | 'note' | 'warning' | 'error'
+ *  'error'   ： 人数不足で2名の枠を埋められなかった
+ *  'warning' ： 要確認（担当者に判断してほしい緩和・組合せ）
+ *  'note'    ： 補足（人数の都合でどうしても避けられない緩和。内容は理由欄に必ず表示する） */
 function statusLabel(status) {
-  return status === 'ok' ? 'OK' : status === 'error' ? '人数不足' : '要確認';
+  return status === 'ok' ? 'OK' : status === 'error' ? '人数不足' : status === 'note' ? '補足' : '要確認';
 }
 function statusRowClass(status) {
-  return status === 'error' ? 'row-error' : status === 'warning' ? 'row-warning' : '';
+  return status === 'error' ? 'row-error' : status === 'warning' ? 'row-warning' : status === 'note' ? 'row-note' : '';
+}
+/** 理由欄の表示（OK以外は必ず理由を表示する） */
+function statusReasonHtml(r) {
+  if (r.status === 'ok') return 'OK';
+  const prefix = r.status === 'error' ? 'エラー：' : r.status === 'note' ? '補足：' : '要確認：';
+  return prefix + escapeHtml(r.reason || '');
 }
 function showToast(msg) {
   const el = document.getElementById('toast');
@@ -1999,7 +2008,7 @@ function renderGenResultTable() {
         <span class="assign-name-chip" draggable="${locked ? 'false' : 'true'}" data-idx="${i}" data-level="junior" title="ドラッグして他の日・欄の職員と入れ替えられます">${r.juniorName ? escapeHtml(r.juniorName) : '未定'}</span>
         ${renderStaffSelect(i, 'junior', r.juniorId, locked)}
       </td>
-      <td>${r.status === 'ok' ? 'OK' : (r.status === 'error' ? 'エラー：' : '要確認：') + escapeHtml(r.reason)}</td>
+      <td>${statusReasonHtml(r)}</td>
     </tr>`
     )
     .join('');
@@ -2085,6 +2094,7 @@ function renderGenResultTable() {
   });
 
   const warnCount = draftResults.filter((r) => r.status === 'warning').length;
+  const noteCount = draftResults.filter((r) => r.status === 'note').length;
   const errorCount = draftResults.filter((r) => r.status === 'error').length;
   // 係長級を含まない日（市民課経験者が資格要件を満たしている日）は、基本の形ではないため件数を明示する
   const noSeniorCount = draftResults.filter((r) => {
@@ -2093,7 +2103,7 @@ function renderGenResultTable() {
     return s && j && s.level !== 'senior' && j.level !== 'senior';
   }).length;
   document.getElementById('gen-warning-summary').innerHTML = draftResults.length
-    ? `<p class="hint">合計 ${draftResults.length} 日 / 要確認 ${warnCount} 日${errorCount ? ` / <strong style="color:var(--danger)">人数不足エラー ${errorCount} 日</strong>` : ''}${noSeniorCount ? ` / 係長級を含まない日 ${noSeniorCount} 日（市民課経験者が資格要件を満たしています）` : ''}</p>`
+    ? `<p class="hint">合計 ${draftResults.length} 日 / 要確認 ${warnCount} 日${noteCount ? ` / 補足 ${noteCount} 日（人数の都合で避けられない緩和。内容は理由欄に表示しています）` : ''}${errorCount ? ` / <strong style="color:var(--danger)">人数不足エラー ${errorCount} 日</strong>` : ''}${noSeniorCount ? ` / 係長級を含まない日 ${noSeniorCount} 日（市民課経験者が資格要件を満たしています）` : ''}</p>`
     : '';
 
   const optEl = document.getElementById('gen-optimize-summary');
@@ -2125,21 +2135,30 @@ function computeOptimizeSummaryHtml() {
   }
   const b = s.before || {};
   const a = s.after || {};
+  const fair = a.fairShare != null ? a.fairShare : b.fairShare;
   const rows = [
-    ['1回も割り当てられていない職員', b.unassigned, a.unassigned],
-    ['同一課の組合せ', b.sameDept, a.sameDept],
-    ['課長補佐・副主幹の組合せ', b.titleClash, a.titleClash],
-    ['過去のペアと重複', b.pairRepeat, a.pairRepeat],
-    ['最低間隔日数を下回る間隔', b.gapViolations, a.gapViolations],
-    ['3回以上担当する職員', b.threeOrMore, a.threeOrMore],
-    ['係長級が含まれない日', b.noSenior, a.noSenior],
-    ['2名を埋められない日', b.errorDays, a.errorDays],
+    ['1回も割り当てられていない職員', b.unassigned, a.unassigned, '名'],
+    ['1人あたりの最大担当回数', b.maxDuties, a.maxDuties, '回'],
+    [`担当回数の目安（${fair}回）を超える職員`, b.overFairShare, a.overFairShare, '名'],
+    ['同一課の組合せ', b.sameDept, a.sameDept, '日'],
+    ['課長補佐・副主幹の組合せ', b.titleClash, a.titleClash, '日'],
+    ['過去のペアと重複', b.pairRepeat, a.pairRepeat, '日'],
+    ['最低間隔日数を下回る間隔', b.gapViolations, a.gapViolations, '件'],
+    ['係長級が含まれない日', b.noSenior, a.noSenior, '日'],
+    ['2名を埋められない日', b.errorDays, a.errorDays, '日'],
   ].filter(([, x, y]) => x != null && y != null && x !== y);
-  const changed = rows.length
-    ? `<ul style="margin:4px 0 0;padding-left:20px;font-weight:normal">${rows
-        .map(([label, x, y]) => `<li>${escapeHtml(label)}：${x} → <strong>${y}</strong>${y < x ? '' : '（増加）'}</li>`)
-        .join('')}</ul>`
-    : '';
+  const list = (items) =>
+    `<ul style="margin:2px 0 0;padding-left:20px;font-weight:normal">${items
+      .map(([label, x, y, unit]) => `<li>${escapeHtml(label)}：${x}${unit} → <strong>${y}${unit}</strong></li>`)
+      .join('')}</ul>`;
+  const better = rows.filter(([, x, y]) => y < x);
+  const worse = rows.filter(([, x, y]) => y > x);
+  const changed =
+    (better.length ? '<p style="margin:6px 0 0">改善したもの</p>' + list(better) : '') +
+    (worse.length
+      ? '<p style="margin:6px 0 0">引き換えに増えたもの（全員に出番を作ること・担当回数の偏りをなくすことを優先しています）</p>' +
+        list(worse)
+      : '');
   const added = s.addedStaff && s.addedStaff.length
     ? `<p style="margin:6px 0 0">この見直しで新たに担当が付いた職員：<strong>${s.addedStaff.map(escapeHtml).join('、')}</strong></p>`
     : '';
@@ -2275,23 +2294,36 @@ function revalidateDraftResult(idx) {
   const violations = validateManualPair(s, j);
 
   const p = currentPeriod();
-  const usedElsewhere = new Set();
+  // 同一処理期内の担当回数を数える（他の日の作成分・確定済み履歴の両方を見る）
+  const countElsewhere = new Map();
+  const bump = (id) => { if (id) countElsewhere.set(id, (countElsewhere.get(id) || 0) + 1); };
   history.forEach((h) => {
     if (h.periodId !== p.id) return;
-    if (h.seniorId) usedElsewhere.add(h.seniorId);
-    if (h.juniorId) usedElsewhere.add(h.juniorId);
+    bump(h.seniorId);
+    bump(h.juniorId);
   });
   draftResults.forEach((other, oi) => {
     if (oi === idx) return;
-    if (other.seniorId) usedElsewhere.add(other.seniorId);
-    if (other.juniorId) usedElsewhere.add(other.juniorId);
+    bump(other.seniorId);
+    bump(other.juniorId);
   });
-  if ((r.seniorId && usedElsewhere.has(r.seniorId)) || (r.juniorId && usedElsewhere.has(r.juniorId))) {
-    violations.push('同一処理期内で2回目の割当です');
+  // 1人あたりの担当回数の目安を超えたときだけ要確認にする（目安の範囲内は補足として表示する）
+  const targetCount = staff.filter(
+    (s2) => s2.active !== false && !!s2.gender && !isStandingExcluded(s2, p.standingExcludedDepts)
+  ).length;
+  const fairShare = Math.max(1, Math.ceil((draftResults.length * 2) / (targetCount || 1)));
+  const counts = [r.seniorId, r.juniorId].filter(Boolean).map((id) => (countElsewhere.get(id) || 0) + 1);
+  const repeatMax = counts.length ? Math.max(...counts) : 0;
+  const notes = [];
+  if (repeatMax >= 2) {
+    const over = repeatMax > fairShare;
+    (over ? violations : notes).push(
+      `同一処理期内で${repeatMax}回目の割当です（1人あたりの目安${fairShare}回${over ? 'を超えています' : 'の範囲内です'}）`
+    );
   }
 
-  r.status = !s || !j ? 'error' : violations.length ? 'warning' : 'ok';
-  r.reason = violations.length ? violations.join(' / ') : '（手動で修正済み）';
+  r.status = !s || !j ? 'error' : violations.length ? 'warning' : notes.length ? 'note' : 'ok';
+  r.reason = violations.length || notes.length ? [...violations, ...notes].join(' / ') : '（手動で修正済み）';
   r.manuallyEdited = true;
 }
 /** ドラッグ&ドロップで2つのセル（行×スロット）の職員を入れ替える。列（1人目／2人目）をまたいでも可 */
