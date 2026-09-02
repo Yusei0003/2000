@@ -1410,18 +1410,41 @@ function renderLeaveTable() {
  * 長期病気休暇の延長確認チェックリスト
  * ------------------------------------------------------------
  * 病気休暇は実績ベースで登録されるため、勤務表作成時点では処理期内の
- * 病気休暇がまだ登録されていないことが多い。処理期開始の3ヶ月前までに
- * 開始していた（＝長期化している）病気休暇のうち、この処理期と重なる
- * ものを候補としてリストアップし、延長の可能性があるかどうかを担当者が
- * チェックで判断する。チェックした職員は、実際の病気休暇の登録終了日に
- * 関係なく、この処理期の間ずっと割当対象から除外する。
+ * 病気休暇がまだ登録されていないことが多い。そこで、ひとつ前の処理期に
+ * 病気休暇で合計15日以上休んでいた職員を「延長の可能性がある職員」の
+ * 候補としてリストアップし、この処理期でも延長しているかどうかを
+ * 担当者がチェックで判断する。チェックした職員は、実際の病気休暇の
+ * 登録終了日に関係なく、この処理期の間ずっと割当対象から除外する。
  * ------------------------------------------------------------ */
-/** 処理期開始の3ヶ月以上前から始まっている病気休暇のうち、この処理期と重なるものを返す */
+const SICK_LEAVE_EXTENSION_THRESHOLD_DAYS = 15;
+/** ひとつ前の処理期に病気休暇で合計15日以上休んでいた職員を、職員番号ごとに集計して返す
+ *  （同一職員の複数の病気休暇記録は前期分を合算する。終了日未登録の休暇は前期末まで続いたものとして数える） */
 function sickLeaveExtensionCandidates(period) {
-  const threshold = toISO(addMonths(parseISO(period.startDate), -3));
-  return leaves
-    .filter((lv) => lv.kind === 'sick' && lv.startDate <= threshold && leaveOverlapsPeriod(lv, period))
-    .sort((a, b) => (a.startDate < b.startDate ? -1 : a.startDate > b.startDate ? 1 : 0));
+  const prevInfo = previousPeriodOf(period.fiscalYear, period.half);
+  const prevRange = periodRange(prevInfo.fiscalYear, prevInfo.half);
+  const byStaff = new Map();
+  leaves
+    .filter((lv) => lv.kind === 'sick')
+    .forEach((lv) => {
+      const start = lv.startDate > prevRange.startDate ? lv.startDate : prevRange.startDate;
+      const end = (lv.endDate && lv.endDate < prevRange.endDate ? lv.endDate : prevRange.endDate);
+      if (start > end) return; // 前期と重ならない
+      const days = diffDays(parseISO(start), parseISO(end)) + 1;
+      const key = String(lv.staffNumber);
+      if (!byStaff.has(key)) {
+        byStaff.set(key, { staffNumber: lv.staffNumber, importedName: lv.importedName || '', days: 0, categories: new Set(), start, end });
+      }
+      const entry = byStaff.get(key);
+      entry.days += days;
+      if (lv.category) entry.categories.add(lv.category);
+      if (!entry.importedName && lv.importedName) entry.importedName = lv.importedName;
+      if (start < entry.start) entry.start = start;
+      if (end > entry.end) entry.end = end;
+    });
+  return [...byStaff.values()]
+    .filter((e) => e.days >= SICK_LEAVE_EXTENSION_THRESHOLD_DAYS)
+    .map((e) => ({ ...e, category: [...e.categories].join('、') }))
+    .sort((a, b) => b.days - a.days || (a.staffNumber < b.staffNumber ? -1 : 1));
 }
 function renderSickLeaveExtensionList() {
   const card = document.getElementById('sick-leave-extension-card');
@@ -1433,18 +1456,18 @@ function renderSickLeaveExtensionList() {
   const excludedSet = new Set((p.sickLeaveExcludedNumbers || []).map(String));
   const tbody = document.getElementById('sick-leave-extension-tbody');
   tbody.innerHTML = candidates
-    .map((lv) => {
-      const s = staff.find((x) => String(x.number) === String(lv.staffNumber));
-      const name = s ? escapeHtml(s.name) : lv.importedName ? `${escapeHtml(lv.importedName)}<span class="muted">（名簿になし）</span>` : '<span class="muted">（名簿に該当職員なし）</span>';
-      const checked = excludedSet.has(String(lv.staffNumber));
+    .map((e) => {
+      const s = staff.find((x) => String(x.number) === String(e.staffNumber));
+      const name = s ? escapeHtml(s.name) : e.importedName ? `${escapeHtml(e.importedName)}<span class="muted">（名簿になし）</span>` : '<span class="muted">（名簿に該当職員なし）</span>';
+      const checked = excludedSet.has(String(e.staffNumber));
       return `
     <tr>
-      <td><input type="checkbox" class="sick-extension-toggle" data-number="${escapeHtml(lv.staffNumber)}" ${checked ? 'checked' : ''}></td>
-      <td>${escapeHtml(lv.staffNumber)}</td>
+      <td><input type="checkbox" class="sick-extension-toggle" data-number="${escapeHtml(e.staffNumber)}" ${checked ? 'checked' : ''}></td>
+      <td>${escapeHtml(e.staffNumber)}</td>
       <td>${name}</td>
-      <td>${escapeHtml(lv.category || '')}</td>
-      <td>${escapeHtml(lv.startDate)}</td>
-      <td>${lv.endDate ? escapeHtml(lv.endDate) : '<span class="muted">未定</span>'}</td>
+      <td>${escapeHtml(e.category || '')}</td>
+      <td>${e.days}日</td>
+      <td>${escapeHtml(e.start)}〜${escapeHtml(e.end)}</td>
     </tr>`;
     })
     .join('');
