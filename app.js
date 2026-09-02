@@ -612,14 +612,14 @@ function generateAssignments({
     // requiredGap には「その探索で確保したい前回勤務日からの間隔（日数）」を渡す。
     // 0 を渡すと間隔を問わない。ignoreElectionDuty=true で選挙管理委員会（併任）の除外を外す
     // （選挙管理委員会の除外は、間隔を緩和してもなお候補が1人もいない場合の最後の手段）。
-    const eligibleBase = (level, gender, requiredGap, ignoreElectionDuty) =>
+    const eligibleBase = (level, gender, requiredGap, ignoreElectionDuty, ignoreDeptExclusion) =>
       activeStaff.filter(
         (s) =>
           s.level === level &&
           (gender == null || s.gender === gender) &&
           !isOnLeave(s, date, leaves) &&
           passesRetire(s, date, retireLeadMonths) &&
-          ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep)) &&
+          (ignoreDeptExclusion || ![...excludedDepts].some((dep) => s.dept && s.dept.includes(dep))) &&
           (ignoreElectionDuty || !(electionDutyExcludedToday && s.electionDuty)) &&
           !bannedBySpecial.has(s.id) &&
           passesNewHire(s, date, newHireMonths) &&
@@ -694,28 +694,31 @@ function generateAssignments({
      *    係長級が確保できない日は市民課経験のある主事級が資格要件を満たす形で1人目に入れる。
      *    これがないと、係長級が少ない性別では日を作れなくなり、その性別の主事級が
      *    処理期を通して1回も割り当てられずに終わってしまう。 */
-    const buildAnchorPool = (gender, anchorMode, requiredGap) => {
-      const seniorPool = withGapFloorOrder(sortCandidates(eligibleBase('senior', gender, requiredGap, false), countMap, lastDateMap, remainingOpportunityMap), requiredGap);
+    const buildAnchorPool = (gender, anchorMode, requiredGap, ignoreDeptExclusion) => {
+      const seniorPool = withGapFloorOrder(sortCandidates(eligibleBase('senior', gender, requiredGap, false, ignoreDeptExclusion), countMap, lastDateMap, remainingOpportunityMap), requiredGap);
       if (anchorMode === 'senior') return seniorPool;
-      const qualifiedJuniors = eligibleBase('junior', gender, requiredGap, false).filter((s) => isQualified(s));
+      const qualifiedJuniors = eligibleBase('junior', gender, requiredGap, false, ignoreDeptExclusion).filter((s) => isQualified(s));
       const qualifiedJuniorPool = withGapFloorOrder(sortCandidates(qualifiedJuniors, countMap, lastDateMap, remainingOpportunityMap), requiredGap);
       return withGapFloorOrder(sortByCountAndRecency(interleave(seniorPool, qualifiedJuniorPool), countMap, lastDateMap, remainingOpportunityMap), requiredGap);
     };
     /** 相方（2人目）の候補プール（係長級・主事級を問わない） */
-    const buildPartnerPool = (gender, requiredGap) => {
-      const seniorPool = withGapFloorOrder(sortCandidates(eligibleBase('senior', gender, requiredGap, false), countMap, lastDateMap, remainingOpportunityMap), requiredGap);
-      const juniorPool = withGapFloorOrder(sortCandidates(eligibleBase('junior', gender, requiredGap, false), countMap, lastDateMap, remainingOpportunityMap), requiredGap);
+    const buildPartnerPool = (gender, requiredGap, ignoreDeptExclusion) => {
+      const seniorPool = withGapFloorOrder(sortCandidates(eligibleBase('senior', gender, requiredGap, false, ignoreDeptExclusion), countMap, lastDateMap, remainingOpportunityMap), requiredGap);
+      const juniorPool = withGapFloorOrder(sortCandidates(eligibleBase('junior', gender, requiredGap, false, ignoreDeptExclusion), countMap, lastDateMap, remainingOpportunityMap), requiredGap);
       return withGapFloorOrder(sortByCountAndRecency(interleave(seniorPool, juniorPool), countMap, lastDateMap, remainingOpportunityMap), requiredGap);
     };
     /** 今期まだ割り当てていない職員を含むペアを、指定した条件で探す。
      *  anchorMode  : 'senior'（係長級のみ）／'qualified'（係長級または市民課経験者）
      *  freshMode   : 'both'（2名とも今期未割当）／'partial'（片方だけ今期未割当＝もう片方は2回目以降）
      *  requiredGap : その探索で確保したい前回勤務日からの間隔（日数。0なら問わない）
-     *  同性ペア・所属除外・育休等の絶対条件はどの組合せでも一切緩和しない。 */
-    const tryFreshTier = (gender, { anchorMode, freshMode, requiredGap }) => {
+     *  ignoreDeptExclusion : true のとき、月別課除外・行事の除外期間による所属除外だけを緩和する
+     *    （8.3.3c。今期まだ一度も割り当てていない職員を、既に割当済みの職員へ2回目を回すより
+     *    先に優先するための緩和で、通常はfalseで探し、それで見つからない場合だけtrueで再探索する）。
+     *  同性ペア・育休等・常時除外・退職予定日・新規採用の絶対条件はどの組合せでも一切緩和しない。 */
+    const tryFreshTier = (gender, { anchorMode, freshMode, requiredGap, ignoreDeptExclusion }) => {
       if (!periodId) return { pair: null, relaxedStage: 0 };
-      const anchorPool = buildAnchorPool(gender, anchorMode, requiredGap);
-      const partnerPool = buildPartnerPool(gender, requiredGap);
+      const anchorPool = buildAnchorPool(gender, anchorMode, requiredGap, ignoreDeptExclusion);
+      const partnerPool = buildPartnerPool(gender, requiredGap, ignoreDeptExclusion);
       const isFresh = (s) => !periodUsedIds.has(s.id);
       const freshAnchors = anchorPool.filter(isFresh);
       const freshPartners = partnerPool.filter(isFresh);
@@ -754,25 +757,36 @@ function generateAssignments({
      *    さらに同じなら「係長級を置く基本の形」を選ぶ。
      *  いずれの段階でも、同性ペア・所属除外・育休等の絶対条件は一切緩和しない。 */
     const tryGenderFreshTiers = (gender, includeStrictFresh) => {
-      for (const freshMode of ['both', 'partial']) {
-        for (const requiredGap of gapLadder) {
-          for (const anchorMode of ['senior', 'qualified']) {
-            // 「係長級・2名とも未割当・間隔厳守」は tryGender と同じ探索のため、
-            // 既に失敗済みと分かっている場合（includeStrictFresh=false）は飛ばす
-            if (!includeStrictFresh && freshMode === 'both' && anchorMode === 'senior' && requiredGap === minGapDays) continue;
-            const r = tryFreshTier(gender, { anchorMode, freshMode, requiredGap });
-            if (!r.pair) continue;
-            return {
-              ...r,
-              repeat: pairIncludesUsed(r.pair),
-              usedGap: requiredGap,
-              forcedFreshGapUsed: requiredGap < minGapDays,
-              partialFreshUsed: freshMode === 'partial',
-            };
+      // 所属除外（月別課除外・行事の除外期間）の緩和は最後の軸に置く。
+      // つまり、今期未割当を活かす他のあらゆる組合せ（freshMode・間隔・1人目の形）を
+      // 所属除外を守ったまま使い尽くしてから、初めて所属除外の緩和を試す。これにより、
+      // 「所属除外を緩和してでも今期未割当の職員を優先する」ことが、
+      // 「既に割当済みの職員に2回目を回す」（このあとの tryGender(gender, true)）より先に行われる。
+      for (const ignoreDeptExclusion of [false, true]) {
+        for (const freshMode of ['both', 'partial']) {
+          for (const requiredGap of gapLadder) {
+            for (const anchorMode of ['senior', 'qualified']) {
+              // 「係長級・2名とも未割当・間隔厳守・所属除外を守る」は tryGender と同じ探索のため、
+              // 既に失敗済みと分かっている場合（includeStrictFresh=false）は飛ばす
+              if (!includeStrictFresh && freshMode === 'both' && anchorMode === 'senior' && requiredGap === minGapDays && !ignoreDeptExclusion) continue;
+              const r = tryFreshTier(gender, { anchorMode, freshMode, requiredGap, ignoreDeptExclusion });
+              if (!r.pair) continue;
+              return {
+                ...r,
+                repeat: pairIncludesUsed(r.pair),
+                usedGap: requiredGap,
+                forcedFreshGapUsed: requiredGap < minGapDays,
+                partialFreshUsed: freshMode === 'partial',
+                forcedDeptExclusionIgnored: ignoreDeptExclusion,
+              };
+            }
           }
         }
       }
-      return { pair: null, relaxedStage: 0, repeat: false, usedGap: minGapDays, forcedFreshGapUsed: false, partialFreshUsed: false };
+      return {
+        pair: null, relaxedStage: 0, repeat: false, usedGap: minGapDays,
+        forcedFreshGapUsed: false, partialFreshUsed: false, forcedDeptExclusionIgnored: false,
+      };
     };
 
     /** 指定した性別に固定して、可能な限りその性別だけでその日を埋める。
@@ -803,6 +817,7 @@ function generateAssignments({
     const searchGenderCapped = (gender, includeFresh) => {
       let r = tryGenderFreshTiers(gender, includeFresh);
       let forcedFreshGapUsed = !!r.forcedFreshGapUsed;
+      let forcedDeptExclusionIgnored = !!r.forcedDeptExclusionIgnored;
       if (!r.pair) {
         const r2 = tryGender(gender, true);
         if (r2.pair) r = r2;
@@ -871,7 +886,7 @@ function generateAssignments({
           ((pair.senior && periodUsedIds.has(pair.senior.id)) || (pair.junior && periodUsedIds.has(pair.junior.id)))
         );
       }
-      return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedIgnoredGap, forcedElectionDutyUsed, forcedFreshGapUsed };
+      return { pair, relaxedStage, repeat, forcedFallbackUsed, forcedIgnoredGap, forcedElectionDutyUsed, forcedFreshGapUsed, forcedDeptExclusionIgnored };
     };
 
     // 性別ゾーン方式：女性ゾーンでは「今期未割当の女性を1名でも含むペア」をまず試す
@@ -889,7 +904,7 @@ function generateAssignments({
     if (zoneToday === 'F') {
       const freshF = tryGenderFreshTiers('F', true);
       if (freshF.pair) {
-        outcome = { ...freshF, forcedFallbackUsed: false, forcedIgnoredGap: false, forcedElectionDutyUsed: false };
+        outcome = { ...freshF, forcedFallbackUsed: false, forcedIgnoredGap: false, forcedElectionDutyUsed: false, forcedDeptExclusionIgnored: !!freshF.forcedDeptExclusionIgnored };
       } else {
         const maleFull = searchGenderFull('M', true);
         if (maleFull.pair) {
@@ -903,7 +918,7 @@ function generateAssignments({
       outcome = searchGenderFull('M', true);
     }
 
-    const { pair, forcedFallbackUsed, forcedElectionDutyUsed, forcedFreshGapUsed } = outcome;
+    const { pair, forcedFallbackUsed, forcedElectionDutyUsed, forcedFreshGapUsed, forcedDeptExclusionIgnored } = outcome;
     const usedGenderToday = pair ? (pair.senior ? pair.senior.gender : pair.junior.gender) : null;
     if (usedGenderToday === 'F') femaleUsedThisPeriod = true;
     if (zoneToday === 'M' && femaleUsedThisPeriod && isFemaleExhausted()) genderZone = 'M';
@@ -944,6 +959,13 @@ function generateAssignments({
         ? '係長級を含まない組合せです（市民課経験者が資格要件を満たしています）'
         : '係長級が含まれていません（人数不足のため）'
       : null;
+    // 所属除外（月別課除外・行事の除外期間）を緩和して割り当てた場合、対象になった所属を理由に明記する
+    const deptExclusionMembers = forcedDeptExclusionIgnored
+      ? pairMembers.filter((p) => [...excludedDepts].some((dep) => p.dept && p.dept.includes(dep)))
+      : [];
+    const deptExclusionReason = deptExclusionMembers.length
+      ? `所属除外ルール（${[...new Set(deptExclusionMembers.map((p) => p.dept))].join('、')}）を緩和し、今期まだ一度も割り当てていない職員を優先したため割り当てました`
+      : null;
 
     // 要確認（warnReasons）と、人数の都合で避けられない補足（noteReasons）に分けて記録する。
     // 緩和した内容はどちらの場合も必ず表示し、表示の強さだけを変える。
@@ -964,6 +986,7 @@ function generateAssignments({
       if (forcedElectionDutyUsed) warnReasons.push('選挙管理委員会事務局（併任）の職員を人数不足のため特例的に割り当てました');
     } else {
       pushRepeat();
+      if (deptExclusionReason) warnReasons.push(deptExclusionReason);
       if (noSeniorReason) warnReasons.push(noSeniorReason);
       pushGap();
       if (!pairIsQualified) warnReasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
@@ -1599,6 +1622,14 @@ function optRecomputeReason(rec, ctx, state) {
     if (!isQualified(s) && !isQualified(j)) warnReasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
     if (s.dept && j.dept && s.dept === j.dept) warnReasons.push('同一課の組合せになっています');
     if (s.level === 'senior' && j.level === 'senior' && isSeniorTitleClash(s, j)) warnReasons.push('課長補佐・副主幹の組合せになっています');
+    if (info) {
+      const deptExclusionMembers = members.filter((p) => [...info.excludedDepts].some((dep) => p.dept && p.dept.includes(dep)));
+      if (deptExclusionMembers.length) {
+        warnReasons.push(
+          `所属除外ルール（${[...new Set(deptExclusionMembers.map((p) => p.dept))].join('、')}）を緩和して割り当てています`
+        );
+      }
+    }
     if (
       (info && isPairBanned(s.id, j.id, ctx.pairLastFY, info.currentFY, ctx.pairLookbackYears)) ||
       optPairDuplicated(state, s.id, j.id)
