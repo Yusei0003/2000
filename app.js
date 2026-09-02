@@ -1764,6 +1764,7 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
 
   let genderSkipped = 0;
   let blockedLeave = 0;
+  let blockedSpecialExclusion = 0;
   let blockedRetire = 0;
   let blockedSpecial = 0;
   let blockedNewHire = 0;
@@ -1771,6 +1772,7 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
   let blockedElectionDuty = 0;
   let eligibleButNotChosen = 0;
   const deptLabels = new Set();
+  const specialExclusionReasons = new Set();
 
   dutyDates.forEach((dd) => {
     const date = parseISO(dd.date);
@@ -1784,7 +1786,20 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
     }
 
     if (isOnLeave(staffMember, date, leaves)) {
-      blockedLeave++;
+      const specialMatch = (leaves || []).find(
+        (lv) =>
+          lv &&
+          lv.kind === 'special' &&
+          String(lv.staffNumber) === String(staffMember.number) &&
+          date >= parseISO(lv.startDate) &&
+          (!lv.endDate || date <= parseISO(lv.endDate))
+      );
+      if (specialMatch) {
+        blockedSpecialExclusion++;
+        specialExclusionReasons.add(specialMatch.category || '理由未登録');
+      } else {
+        blockedLeave++;
+      }
       return;
     }
     if (!passesRetire(staffMember, date, retireLeadMonths)) {
@@ -1847,6 +1862,7 @@ function explainUnassignedStaff(staffMember, { dutyDates, results, staffList, mo
 
   const parts = [];
   if (blockedLeave > 0) parts.push(`育休・産休等の除外期間中（${blockedLeave}日）`);
+  if (blockedSpecialExclusion > 0) parts.push(`特例の除外に該当（理由：${[...specialExclusionReasons].join('・')}・${blockedSpecialExclusion}日）`);
   if (blockedRetire > 0) parts.push(`退職予定日の${retireLeadMonths}ヶ月前を過ぎているため対象外（${blockedRetire}日）`);
   if (blockedSpecial > 0) parts.push(`年末年始・GWの重複回避により対象外（前回・前々回の同期間の担当者のため・${blockedSpecial}日）`);
   if (deptLabels.size > 0) parts.push(`所属の除外ルールに該当（${[...deptLabels].join('・')}）`);

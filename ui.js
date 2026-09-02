@@ -298,6 +298,7 @@ function buildPeriod(fiscalYear, half) {
     label: periodLabelOf(fiscalYear, half),
     standingExcludedDepts: [],
     sickLeaveExcludedNumbers: [], // 長期病気休暇の延長確認チェックリストで、担当者が対象外にした職員番号
+    specialExclusions: [], // 特例の除外（個別・理由付き）：[{ id, number, name, reason }]
     createdAt: new Date().toISOString(),
   };
 }
@@ -567,6 +568,7 @@ function renderAllForPeriod() {
   renderStaffTable();
   renderStandingRuleList();
   renderLeaveTable();
+  renderSpecialExclusionList();
   renderHistoryTable();
   renderCheckTable();
   populateFiscalYearSelect();
@@ -610,6 +612,7 @@ function initTabs() {
       }
       if (btn.dataset.tab === 'rules') {
         renderStandingRuleList();
+        renderSpecialExclusionList();
       }
       if (btn.dataset.tab === 'docs') {
         renderDocTab();
@@ -1483,12 +1486,13 @@ function renderSickLeaveExtensionList() {
     });
   });
 }
-/** 長期病気休暇の延長確認でチェックされた職員を、この処理期の間ずっと除外する
- *  仮想的な育休等除外期間（leaves）として合成し、実際のleavesに追加して返す。
- *  勤務表作成・未割当理由の説明の両方で、この合成後の配列を渡す。 */
+/** 長期病気休暇の延長確認でチェックされた職員・特例の除外に登録された職員を、
+ *  この処理期の間ずっと除外する仮想的な除外期間（leaves）として合成し、実際のleavesに
+ *  追加して返す。勤務表作成・未割当理由の説明の両方で、この合成後の配列を渡す。 */
 function effectiveLeavesForPeriod(period) {
   const excludedNumbers = period.sickLeaveExcludedNumbers || [];
-  if (!excludedNumbers.length) return leaves;
+  const specialExclusions = period.specialExclusions || [];
+  if (!excludedNumbers.length && !specialExclusions.length) return leaves;
   const synthetic = excludedNumbers.map((number) => ({
     id: `sick-ext-${period.id}-${number}`,
     staffNumber: String(number),
@@ -1498,7 +1502,16 @@ function effectiveLeavesForPeriod(period) {
     importedName: '',
     kind: 'sick',
   }));
-  return leaves.concat(synthetic);
+  const syntheticSpecial = specialExclusions.map((x) => ({
+    id: `special-${period.id}-${x.id}`,
+    staffNumber: String(x.number),
+    startDate: period.startDate,
+    endDate: period.endDate,
+    category: x.reason,
+    importedName: x.name || '',
+    kind: 'special',
+  }));
+  return leaves.concat(synthetic, syntheticSpecial);
 }
 /** 育休Excelを解析する（職員番号・氏名・区分・開始・終了の列を読む）
  *  B列とD列がどちらも「氏名」のため、先に現れる列（職員氏名）を採用する */
@@ -1782,6 +1795,68 @@ function initMonthRuleForm() {
     renderMonthRuleTable();
     e.target.reset();
   });
+}
+
+/* ------------------------------------------------------------
+ * 特例の除外（個別）
+ * ------------------------------------------------------------
+ * 自動判定ではカバーできない理由（前の処理期で2回勤務した等）で、
+ * 担当者が個別に理由を付けて職員を割当対象から除外できるようにする。
+ * 登録した職員は選択中の処理期の間ずっと対象外になる（sickLeaveExcludedNumbers
+ * と同様、effectiveLeavesForPeriodで合成した仮想の除外期間として扱う）。
+ * ------------------------------------------------------------ */
+/** 特例の除外の選択肢（現在の処理期の名簿）と、登録済みの一覧を描画する */
+function renderSpecialExclusionList() {
+  const sel = document.getElementById('se-staff');
+  if (!sel) return;
+  const p = currentPeriod();
+  const list = p.specialExclusions || [];
+  const excludedIds = new Set(list.map((x) => String(x.number)));
+  const pool = staff.filter((s) => s.active !== false && !excludedIds.has(String(s.number)));
+  sel.innerHTML = pool.length
+    ? pool
+        .map((s) => `<option value="${escapeHtml(String(s.number))}">${escapeHtml(s.name)}（${escapeHtml(s.dept || '')}）</option>`)
+        .join('')
+    : '<option value="">名簿が未登録、または全員が登録済みです</option>';
+  const tbody = document.getElementById('special-exclusion-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = list
+    .map((x) => {
+      const s = staff.find((y) => String(y.number) === String(x.number));
+      const name = s ? escapeHtml(s.name) : x.name ? `${escapeHtml(x.name)}<span class="muted">（名簿になし）</span>` : '<span class="muted">（名簿に該当職員なし）</span>';
+      return `
+    <tr>
+      <td>${escapeHtml(String(x.number))}</td>
+      <td>${name}</td>
+      <td>${escapeHtml(x.reason || '')}</td>
+      <td><button class="btn-danger" data-del="${escapeHtml(x.id)}">削除</button></td>
+    </tr>`;
+    })
+    .join('');
+  tbody.querySelectorAll('[data-del]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const cur = currentPeriod();
+      cur.specialExclusions = (cur.specialExclusions || []).filter((x) => x.id !== btn.dataset.del);
+      save(KEY_PERIODS, periods);
+      renderSpecialExclusionList();
+    });
+  });
+}
+function initSpecialExclusionForm() {
+  document.getElementById('special-exclusion-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const number = document.getElementById('se-staff').value;
+    const reason = document.getElementById('se-reason').value.trim();
+    if (!number || !reason) return;
+    const s = staff.find((x) => String(x.number) === String(number));
+    const p = currentPeriod();
+    if (!p.specialExclusions) p.specialExclusions = [];
+    p.specialExclusions.push({ id: uid('se'), number, name: s ? s.name : '', reason });
+    save(KEY_PERIODS, periods);
+    renderSpecialExclusionList();
+    e.target.reset();
+  });
+  renderSpecialExclusionList();
 }
 
 /* ------------------------------------------------------------
@@ -3977,6 +4052,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initLeaveForm();
   initStandingRuleForm();
   initMonthRuleForm();
+  initSpecialExclusionForm();
   initEventForm();
   initGenerateDates();
   initGenerateRun();
