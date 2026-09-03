@@ -2339,16 +2339,20 @@ function computeOverburdenedSummaryHtml() {
     .join('');
   return `<p style="margin:0 0 4px;font-weight:600">今期の担当回数：最大${max}回／平均${avg.toFixed(1)}回／2回以上 ${overburdened.length}名</p><ul style="margin:0;padding-left:20px;font-weight:normal">${items}</ul>`;
 }
-/** level='senior'（1人目）は必ず係長級から選ぶ。level='junior'（2人目）は係長級・主事級のどちらも選べる
- *（1日2名のうち少なくとも1名が係長級であればよいため、係長級2名の組合せも許可している）。 */
+/** level='senior'（1人目）は、資格要件（8.3.14）を満たす職員＝係長級、または市民課経験のある
+ *  主事級から選ぶ。level='junior'（2人目）は係長級・主事級のどちらも選べる
+ *（1日2名のうち少なくとも1名が係長級または市民課経験者であればよいため）。 */
 function renderStaffSelect(idx, level, currentId, disabled) {
   const standingDepts = currentPeriod().standingExcludedDepts;
-  const pool = (level === 'senior' ? staff.filter((s) => s.level === 'senior') : staff).filter(
+  const pool = (level === 'senior' ? staff.filter((s) => isQualified(s)) : staff).filter(
     (s) => s.active !== false && !isStandingExcluded(s, standingDepts)
   );
   const options = pool
     .map((s) => {
-      const label = level === 'senior' ? `${escapeHtml(s.name)}（${escapeHtml(s.dept)}）` : `${escapeHtml(s.name)}（${escapeHtml(s.dept)}・${LEVEL_LABEL[s.level]}）`;
+      const label =
+        level === 'senior'
+          ? `${escapeHtml(s.name)}（${escapeHtml(s.dept)}${s.level === 'junior' ? '・市民課経験者' : ''}）`
+          : `${escapeHtml(s.name)}（${escapeHtml(s.dept)}・${LEVEL_LABEL[s.level]}）`;
       return `<option value="${s.id}" ${s.id === currentId ? 'selected' : ''}>${label}</option>`;
     })
     .join('');
@@ -2368,7 +2372,14 @@ function validateManualPair(seniorRec, juniorRec) {
     return reasons;
   }
   if (seniorRec.level !== 'senior' && juniorRec.level !== 'senior') {
-    reasons.push('係長級が含まれていません');
+    reasons.push(
+      isQualified(seniorRec) || isQualified(juniorRec)
+        ? '係長級を含まない組合せです（市民課経験者が資格要件を満たしています）'
+        : '係長級が含まれていません（人数不足のため）'
+    );
+    if (!isQualified(seniorRec) && !isQualified(juniorRec)) {
+      reasons.push('資格要件（係長級・市民課経験者）を満たす職員がいません');
+    }
   }
   if (seniorRec.gender && juniorRec.gender && seniorRec.gender !== juniorRec.gender) {
     reasons.push('性別が異なる組合せです');
@@ -2982,9 +2993,10 @@ function openChangeModal(date, level) {
   if (!record) return;
   const currentName = level === 'senior' ? record.seniorName : record.juniorName;
   const currentId = level === 'senior' ? record.seniorId : record.juniorId;
-  const candidates = staff.filter((s) => s.level === level && s.active !== false);
+  // 1人目（senior）は、資格要件（8.3.14）を満たす職員＝係長級、または市民課経験のある主事級から選べる
+  const candidates = staff.filter((s) => (level === 'senior' ? isQualified(s) : s.level === level) && s.active !== false);
   const options = candidates
-    .map((s) => `<option value="${s.id}">${escapeHtml(s.name)}（${escapeHtml(s.dept)}）</option>`)
+    .map((s) => `<option value="${s.id}">${escapeHtml(s.name)}（${escapeHtml(s.dept)}${level === 'senior' && s.level === 'junior' ? '・市民課経験者' : ''}）</option>`)
     .join('');
 
   const isFileProtocol = location.protocol === 'file:';
