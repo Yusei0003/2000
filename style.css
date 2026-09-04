@@ -369,30 +369,6 @@ select[multiple] {
 .modal-box h3 { margin: 0 0 14px; font-size: 16px; }
 .modal-box .grid-form { margin-bottom: 18px; }
 
-.print-sheet {
-  position: fixed;
-  left: -9999px;
-  top: 0;
-  width: 780px;
-  background: #fff;
-  color: #111;
-  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
-  padding: 24px;
-}
-.print-sheet h2 { text-align: center; font-size: 18px; margin: 0 0 16px; }
-/* table要素自体にもth/tdと同じ罫線を明示的に指定する。border-collapse時、セル側の罫線
- * だけに頼ると、html2canvasでの画像化時に表の一番下の行の下罫線が描画されないことがある
- * （html2canvasの既知の描画不具合）。table要素にも罫線を持たせることで、その行の罫線が
- * 欠けた場合でも表の外枠として描画され、罫線切れを防げる。 */
-.print-sheet table { width: 100%; border-collapse: collapse; font-size: 12px; border: 1px solid #999; }
-.print-sheet th, .print-sheet td {
-  border: 1px solid #999;
-  padding: 5px 6px;
-  text-align: left;
-  white-space: nowrap;
-}
-.print-sheet th { background: #eef2f7; }
-
 .toast {
   position: fixed;
   bottom: 24px;

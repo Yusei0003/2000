@@ -3272,138 +3272,169 @@ function initHandoverExport() {
 }
 
 /* ------------------------------------------------------------
- * PDF出力（html2canvasで画像化し、jsPDFに埋め込む）
+ * PDF出力（jsPDFの文字・線描画で表を直接組み立てる。画像化しないため
+ * ファイルサイズが小さく、文字も検索・コピー可能になる）
  * ------------------------------------------------------------ */
-/** PDF用の印刷シート要素を1枚作る。見出し欄は「氏名」で統一する（係長級・主事級の別は表示しない）。 */
-function buildPrintSheetEl(headingHtml, rows) {
-  const swapMarkers = computeSwapMarkers();
-  const sheet = document.createElement('div');
-  sheet.className = 'print-sheet';
-  sheet.innerHTML = `
-    ${headingHtml}
-    <table>
-      <thead><tr><th>日付</th><th>曜日</th><th>氏名</th><th>変更日時</th><th>氏名</th><th>変更日時</th></tr></thead>
-      <tbody>
-        ${
-          rows.length
-            ? rows
-                .map(
-                  (r) => `<tr>
-              <td>${r.date}</td>
-              <td>${WEEKDAY_LABEL[r.weekday]}</td>
-              <td>${swapMarkerHtml(r.date, 'senior', swapMarkers)}${escapeHtml(r.seniorName || '')}</td>
-              <td>${escapeHtml(r.seniorChangedAt || '')}</td>
-              <td>${swapMarkerHtml(r.date, 'junior', swapMarkers)}${escapeHtml(r.juniorName || '')}</td>
-              <td>${escapeHtml(r.juniorChangedAt || '')}</td>
-            </tr>`
-                )
-                .join('')
-            : '<tr><td colspan="6" style="text-align:center;color:#666">該当日はありません</td></tr>'
-        }
-      </tbody>
-    </table>`;
-  return sheet;
+const PDF_FONT_NAME = 'NotoSansJP';
+/** 表の見出し欄は「氏名」で統一する（係長級・主事級の別は表示しない）。 */
+const ROSTER_COLUMNS = [
+  { header: '日付', get: (r) => r.date },
+  { header: '曜日', get: (r) => WEEKDAY_LABEL[r.weekday] },
+  { header: '氏名', get: (r) => r.seniorName || '', level: 'senior' },
+  { header: '変更日時', get: (r) => r.seniorChangedAt || '' },
+  { header: '氏名', get: (r) => r.juniorName || '', level: 'junior' },
+  { header: '変更日時', get: (r) => r.juniorChangedAt || '' },
+];
+const ROSTER_PAD_X = 4; // pt（セル内の左パディング）
+const ROSTER_MARKER_DIAM = 6; // pt（交換ペアの色丸マーカーの直径）
+const ROSTER_MARKER_GAP = 3; // pt（マーカーと文字の間隔）
+const ROSTER_LINE_WIDTH = 0.75; // pt（罫線の太さ）
+const ROSTER_ROW_HEIGHT_FACTOR = 2.3; // 行の高さ ＝ フォントサイズ × この係数
+const ROSTER_BASE_FONT_SIZE = 9; // pt（縮小の必要がない場合の基準フォントサイズ）
+const ROSTER_TITLE_FONT_SIZE = 13; // pt
+const ROSTER_TITLE_GAP = 16; // pt（見出しから表までの間隔）
+const ROSTER_HEADER_FILL = [238, 242, 247]; // #eef2f7
+const ROSTER_BORDER_COLOR = [153, 153, 153]; // #999
+const ROSTER_TEXT_COLOR = [17, 17, 17]; // #111
+/** PDFにNoto Sans JP（サブセット埋め込み）を登録する。jsPDFは実際に使われた文字だけを
+ *  埋め込むため、フォント自体は大きくても生成後のPDFサイズは小さく保たれる。 */
+function ensurePdfFont(pdf) {
+  if (pdf.__notoFontReady) return;
+  pdf.addFileToVFS('NotoSansJP-Regular.ttf', window.NOTO_SANS_JP_REGULAR_BASE64);
+  pdf.addFont('NotoSansJP-Regular.ttf', PDF_FONT_NAME, 'normal');
+  pdf.setFont(PDF_FONT_NAME, 'normal');
+  pdf.__notoFontReady = true;
 }
-/** .print-sheet の固定幅（style.css）。ページに収まる行数の見積もりに使う。 */
-const PRINT_SHEET_WIDTH_PX = 780;
-/** 1ページに収まる行数を実測する。日付・氏名等の欄はwhite-space:nowrapで折り返さないため、
- *  行の高さは常に一定になる。行数が異なる2つのサンプルシートの高さの差分から、見出し・
- *  ヘッダー行分を除いた1行あたりの高さを逆算し、ページの縦幅から収まる行数を求める。
- *  フォントのレンダリング差等を見込んで少し余裕（5%）を持たせる。 */
-function computeRowsPerPage(pdf, margin) {
-  const sampleRow = { date: '2026-04-01', weekday: 3, seniorName: '見本太郎太郎', seniorChangedAt: '2026-04-01 09:00', juniorName: '見本花子花子', juniorChangedAt: '2026-04-01 09:00' };
-  const measureHeight = (n) => {
-    const sheet = buildPrintSheetEl('<h2>見本</h2>', Array(n).fill(sampleRow));
-    document.body.appendChild(sheet);
-    const h = sheet.getBoundingClientRect().height;
-    document.body.removeChild(sheet);
-    return h;
-  };
-  const hA = measureHeight(5);
-  const hB = measureHeight(20);
-  const rowHeight = (hB - hA) / 15;
-  const fixedOverhead = hA - 5 * rowHeight;
-  const usableWidthPt = pdf.internal.pageSize.getWidth() - margin * 2;
-  const usableHeightPt = pdf.internal.pageSize.getHeight() - margin * 2;
-  const ptPerCssPx = usableWidthPt / PRINT_SHEET_WIDTH_PX;
-  const usableCssHeight = usableHeightPt / ptPerCssPx;
-  const rowsPerPage = Math.floor(((usableCssHeight - fixedOverhead) / rowHeight) * 0.95);
-  return Math.max(1, rowsPerPage);
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
-/** 1枚の印刷シートを画像化し、PDFのページとして追加する（呼び出し側で1ページに収まる行数に
- *  分割している前提だが、見積もりがずれて収まらない場合の保険として、続けてページを追加する）。 */
-function addSheetPagesToPdf(pdf, sheet, margin, isVeryFirstPage) {
-  document.body.appendChild(sheet);
-  return window.html2canvas(sheet, { scale: 2 }).then((canvas) => {
-    document.body.removeChild(sheet);
-    const imgData = canvas.toDataURL('image/png');
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const usableWidth = pageWidth - margin * 2;
-    const imgHeight = (canvas.height * usableWidth) / canvas.width;
-
-    if (!isVeryFirstPage) pdf.addPage();
-    let heightLeft = imgHeight;
-    let position = margin;
-    pdf.addImage(imgData, 'PNG', margin, position, usableWidth, imgHeight);
-    heightLeft -= pageHeight - margin * 2;
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight + margin;
-      pdf.addPage();
-      pdf.addImage(imgData, 'PNG', margin, position, usableWidth, imgHeight);
-      heightLeft -= pageHeight - margin * 2;
-    }
-  }).catch((err) => {
-    if (sheet.parentNode) document.body.removeChild(sheet);
-    throw err;
+/** 各列の幅・行の高さ・フォントサイズを、実際のセル内容の幅から求める。
+ *  横幅がページ幅に収まらない場合のみフォントを縮小し、収まる場合は基準フォントサイズを
+ *  保ったまま、余った幅を列いっぱいに広げる（表を常にページ幅いっぱいに揃えるため）。 */
+function computeRosterLayout(pdf, rows, swapMarkers, usableWidth) {
+  pdf.setFont(PDF_FONT_NAME, 'normal');
+  pdf.setFontSize(ROSTER_BASE_FONT_SIZE);
+  const naturalColWidths = ROSTER_COLUMNS.map((col) => {
+    let max = pdf.getTextWidth(col.header);
+    rows.forEach((r) => {
+      const hasMarker = col.level && swapMarkers.get(r.date + '|' + col.level);
+      const markerW = hasMarker ? ROSTER_MARKER_DIAM + ROSTER_MARKER_GAP : 0;
+      max = Math.max(max, markerW + pdf.getTextWidth(col.get(r)));
+    });
+    return max + ROSTER_PAD_X * 2;
   });
+  const naturalWidth = naturalColWidths.reduce((a, b) => a + b, 0) || 1;
+  const shrink = Math.min(1, usableWidth / naturalWidth);
+  const fontSize = ROSTER_BASE_FONT_SIZE * shrink;
+  const rowHeight = fontSize * ROSTER_ROW_HEIGHT_FACTOR;
+  const stretch = usableWidth / (naturalWidth * shrink);
+  const colWidths = naturalColWidths.map((w) => w * shrink * stretch);
+  return { fontSize, rowHeight, colWidths };
 }
-/** 1枚の印刷シートを画像化し、必ず1ページに収まるよう縦横比を保ったまま縮小してPDFに
- *  埋め込む（行数が多くても複数ページに分かれない）。横方向は中央寄せにする。 */
-function addSheetFitToOnePage(pdf, sheet, margin, isVeryFirstPage) {
-  document.body.appendChild(sheet);
-  return window.html2canvas(sheet, { scale: 2 }).then((canvas) => {
-    document.body.removeChild(sheet);
-    const imgData = canvas.toDataURL('image/png');
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const maxWidth = pageWidth - margin * 2;
-    const maxHeight = pageHeight - margin * 2;
-    let width = maxWidth;
-    let height = (canvas.height * width) / canvas.width;
-    if (height > maxHeight) {
-      height = maxHeight;
-      width = (canvas.width * height) / canvas.height;
-    }
-    const x = margin + (maxWidth - width) / 2;
-    if (!isVeryFirstPage) pdf.addPage();
-    pdf.addImage(imgData, 'PNG', x, margin, width, height);
-  }).catch((err) => {
-    if (sheet.parentNode) document.body.removeChild(sheet);
-    throw err;
+/** 縦方向にも収まりきらない場合（四半期を1ページに収めるモード）、列幅はそのままに
+ *  フォントサイズと行の高さだけをさらに縮小する。 */
+function fitRosterLayoutToHeight(layout, rowCount, usableHeight) {
+  const totalHeight = layout.rowHeight * (Math.max(rowCount, 1) + 1);
+  if (totalHeight <= usableHeight) return layout;
+  const vshrink = usableHeight / totalHeight;
+  return { ...layout, fontSize: layout.fontSize * vshrink, rowHeight: layout.rowHeight * vshrink };
+}
+function drawRosterTitle(pdf, text, x, width, y) {
+  pdf.setFont(PDF_FONT_NAME, 'normal');
+  pdf.setFontSize(ROSTER_TITLE_FONT_SIZE);
+  pdf.setTextColor(...ROSTER_TEXT_COLOR);
+  pdf.text(text, x + width / 2, y, { align: 'center', baseline: 'top' });
+  return y + ROSTER_TITLE_FONT_SIZE + ROSTER_TITLE_GAP;
+}
+function drawRosterHeaderRow(pdf, layout, x, y) {
+  pdf.setFontSize(layout.fontSize);
+  pdf.setLineWidth(ROSTER_LINE_WIDTH);
+  pdf.setTextColor(...ROSTER_TEXT_COLOR);
+  let cx = x;
+  ROSTER_COLUMNS.forEach((col, i) => {
+    const w = layout.colWidths[i];
+    // 塗りつぶし色は毎回明示的に設定し直す（jsPDFは同じ色のまま塗り矩形を連続で描くと、
+    // 直後に描画する文字が黒塗りの四角に化けてしまう不具合があるため、それを避けるための
+    // 対策。値が変わっていなくても setFillColor を呼び直す必要がある）。
+    pdf.setDrawColor(...ROSTER_BORDER_COLOR);
+    pdf.setFillColor(...ROSTER_HEADER_FILL);
+    pdf.rect(cx, y, w, layout.rowHeight, 'FD');
+    pdf.text(col.header, cx + ROSTER_PAD_X, y + layout.rowHeight / 2, { baseline: 'middle' });
+    cx += w;
   });
+  return y + layout.rowHeight;
 }
-/** 行数が多い場合に備え、1ページに収まる行数ごとにシートを分けてPDF化する
- *  （表の行の途中でページが分かれることがなく、罫線が欠けない）。 */
+function drawRosterBodyRow(pdf, layout, swapMarkers, row, x, y) {
+  const h = layout.rowHeight;
+  pdf.setFontSize(layout.fontSize);
+  let cx = x;
+  ROSTER_COLUMNS.forEach((col, i) => {
+    const w = layout.colWidths[i];
+    pdf.setDrawColor(...ROSTER_BORDER_COLOR);
+    pdf.setLineWidth(ROSTER_LINE_WIDTH);
+    pdf.rect(cx, y, w, h);
+    let textX = cx + ROSTER_PAD_X;
+    const marker = col.level && swapMarkers.get(row.date + '|' + col.level);
+    if (marker) {
+      const [mr, mg, mb] = hexToRgb(marker.color);
+      pdf.setFillColor(mr, mg, mb);
+      pdf.setDrawColor(0, 0, 0);
+      pdf.circle(textX + ROSTER_MARKER_DIAM / 2, y + h / 2, ROSTER_MARKER_DIAM / 2, 'FD');
+      textX += ROSTER_MARKER_DIAM + ROSTER_MARKER_GAP;
+    }
+    pdf.setTextColor(...ROSTER_TEXT_COLOR);
+    pdf.text(col.get(row), textX, y + h / 2, { baseline: 'middle' });
+    cx += w;
+  });
+  return y + h;
+}
+function drawRosterEmptyRow(pdf, layout, x, y) {
+  const w = layout.colWidths.reduce((a, b) => a + b, 0);
+  pdf.setDrawColor(...ROSTER_BORDER_COLOR);
+  pdf.setLineWidth(ROSTER_LINE_WIDTH);
+  pdf.rect(x, y, w, layout.rowHeight);
+  pdf.setFontSize(layout.fontSize);
+  pdf.setTextColor(102, 102, 102);
+  pdf.text('該当日はありません', x + w / 2, y + layout.rowHeight / 2, { align: 'center', baseline: 'middle' });
+  return y + layout.rowHeight;
+}
+/** 1ページ分の見出し＋表（ヘッダー行＋本文行）を描画する。 */
+function drawRosterPage(pdf, title, rows, layout, swapMarkers, margin) {
+  const usableWidth = pdf.internal.pageSize.getWidth() - margin * 2;
+  let y = drawRosterTitle(pdf, title, margin, usableWidth, margin);
+  y = drawRosterHeaderRow(pdf, layout, margin, y);
+  if (rows.length) {
+    rows.forEach((r) => {
+      y = drawRosterBodyRow(pdf, layout, swapMarkers, r, margin, y);
+    });
+  } else {
+    drawRosterEmptyRow(pdf, layout, margin, y);
+  }
+}
+/** 行数が多い場合に備え、1ページに収まる行数ごとにページを分けてPDF化する。 */
 function exportRowsToPdf(title, rows, filename) {
   if (!rows.length) {
     alert('出力する内容がありません');
     return;
   }
   const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4', compress: true });
+  ensurePdfFont(pdf);
   const margin = 24;
-  const rowsPerPage = computeRowsPerPage(pdf, margin);
+  const usableWidth = pdf.internal.pageSize.getWidth() - margin * 2;
+  const usableHeight = pdf.internal.pageSize.getHeight() - margin * 2;
+  const swapMarkers = computeSwapMarkers();
+  const layout = computeRosterLayout(pdf, rows, swapMarkers, usableWidth);
+  const headingHeight = ROSTER_TITLE_FONT_SIZE + ROSTER_TITLE_GAP;
+  const rowsPerPage = Math.max(1, Math.floor((usableHeight - headingHeight - layout.rowHeight) / layout.rowHeight));
   const chunks = [];
   for (let i = 0; i < rows.length; i += rowsPerPage) chunks.push(rows.slice(i, i + rowsPerPage));
-  let chain = Promise.resolve();
   chunks.forEach((chunk, i) => {
-    const sheet = buildPrintSheetEl(`<h2>${escapeHtml(title)}　日直勤務表</h2>`, chunk);
-    chain = chain.then(() => addSheetPagesToPdf(pdf, sheet, margin, i === 0));
+    if (i > 0) pdf.addPage();
+    drawRosterPage(pdf, `${title}　日直勤務表`, chunk, layout, swapMarkers, margin);
   });
-  chain
-    .then(() => pdf.save(filename))
-    .catch((err) => alert('PDFの生成に失敗しました：' + err.message));
+  pdf.save(filename);
 }
 /** 処理期（前期／後期）の勤務表を、四半期ごとに1ページへ収めてPDF出力する（行数が多い場合は
  *  自動的に縮小して1ページに収める）。
@@ -3432,16 +3463,23 @@ function exportPeriodPdfByQuarter(period, rows, filename) {
     rows: rows.filter((r) => qd.months.includes(parseISO(r.date).getMonth() + 1)),
   }));
   const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4', compress: true });
+  ensurePdfFont(pdf);
   const margin = 24;
-  let chain = Promise.resolve();
+  const usableWidth = pdf.internal.pageSize.getWidth() - margin * 2;
+  const usableHeight = pdf.internal.pageSize.getHeight() - margin * 2;
+  const swapMarkers = computeSwapMarkers();
+  const headingHeight = ROSTER_TITLE_FONT_SIZE + ROSTER_TITLE_GAP;
   quarters.forEach((q, i) => {
-    const sheet = buildPrintSheetEl(`<h2>${escapeHtml(period.label)}　日直勤務表（${q.label}）</h2>`, q.rows);
-    chain = chain.then(() => addSheetFitToOnePage(pdf, sheet, margin, i === 0));
+    if (i > 0) pdf.addPage();
+    const layout = fitRosterLayoutToHeight(
+      computeRosterLayout(pdf, q.rows, swapMarkers, usableWidth),
+      q.rows.length,
+      usableHeight - headingHeight
+    );
+    drawRosterPage(pdf, `${period.label}　日直勤務表（${q.label}）`, q.rows, layout, swapMarkers, margin);
   });
-  chain
-    .then(() => pdf.save(filename))
-    .catch((err) => alert('PDFの生成に失敗しました：' + err.message));
+  pdf.save(filename);
 }
 function initHistoryPdf() {
   document.getElementById('history-pdf-btn').addEventListener('click', () => {
