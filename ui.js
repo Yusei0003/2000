@@ -2149,6 +2149,7 @@ function renderGenResultTable() {
       genApprovalChecked = false;
       saveGenSession();
       renderGenResultTable();
+      alertIfManualEditViolations(affectedIdxs);
     });
   });
 
@@ -2183,11 +2184,13 @@ function renderGenResultTable() {
         dragSource = null;
         return;
       }
+      const swapped = { a: { ...dragSource }, b: { ...target } };
       swapDraftResultSlots(dragSource, target);
       dragSource = null;
       genApprovalChecked = false;
       saveGenSession();
       renderGenResultTable();
+      alertIfManualEditViolations([swapped.a.idx, swapped.b.idx]);
     });
   });
 
@@ -2434,6 +2437,17 @@ function revalidateDraftResult(idx) {
   r.status = !s || !j ? 'error' : violations.length ? 'warning' : notes.length ? 'note' : 'ok';
   r.reason = violations.length || notes.length ? [...violations, ...notes].join(' / ') : '（手動で修正済み）';
   r.manuallyEdited = true;
+}
+/** 手動での入れ替え・選択の直後に、影響を受けた行の中に「要確認」「人数不足」の行があれば
+ *  ポップアップで知らせる（一覧の状態欄を見落とすことがあるため）。「補足」（目安の範囲内）は
+ *  対象外。 */
+function alertIfManualEditViolations(idxs) {
+  const flagged = [...idxs]
+    .map((i) => draftResults[i])
+    .filter((r) => r && (r.status === 'warning' || r.status === 'error'));
+  if (!flagged.length) return;
+  const lines = flagged.map((r) => `${r.date}（${WEEKDAY_LABEL[r.weekday]}）：${r.reason}`);
+  alert('入れ替え後の組合せにルール違反があります。\n\n' + lines.join('\n'));
 }
 /** ドラッグ&ドロップで2つのセル（行×スロット）の職員を入れ替える。列（1人目／2人目）をまたいでも可 */
 function swapDraftResultSlots(a, b) {
