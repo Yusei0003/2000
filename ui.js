@@ -3007,10 +3007,18 @@ function openChangeModal(date, level) {
   if (!record) return;
   const currentName = level === 'senior' ? record.seniorName : record.juniorName;
   const currentId = level === 'senior' ? record.seniorId : record.juniorId;
-  // 1人目（senior）は、資格要件（8.3.14）を満たす職員＝係長級、または市民課経験のある主事級から選べる
-  const candidates = staff.filter((s) => (level === 'senior' ? isQualified(s) : s.level === level) && s.active !== false);
+  // 1人目（senior）は、資格要件（8.3.14）を満たす職員＝係長級、または市民課経験のある主事級から選べる。
+  // 2人目（junior）は係長級・主事級のどちらも選べる（係長級2名の組合せの日は、2人目にも
+  // 係長級が入っているため。勤務表作成タブのプルダウンと同じ条件に揃えている）。
+  const candidates = staff.filter((s) => (level === 'senior' ? isQualified(s) : true) && s.active !== false);
   const options = candidates
-    .map((s) => `<option value="${s.id}">${escapeHtml(s.name)}（${escapeHtml(s.dept)}${level === 'senior' && s.level === 'junior' ? '・市民課経験者' : ''}）</option>`)
+    .map((s) => {
+      const label =
+        level === 'senior'
+          ? `${escapeHtml(s.name)}（${escapeHtml(s.dept)}${s.level === 'junior' ? '・市民課経験者' : ''}）`
+          : `${escapeHtml(s.name)}（${escapeHtml(s.dept)}・${LEVEL_LABEL[s.level]}）`;
+      return `<option value="${s.id}">${label}</option>`;
+    })
     .join('');
 
   const isFileProtocol = location.protocol === 'file:';
@@ -3130,10 +3138,12 @@ function openChangeModal(date, level) {
 
     const swapValue = swapTargetSelect && !swapSection.classList.contains('hidden') ? swapTargetSelect.value : '';
     let swapApplied = false;
+    let swapRecordRef = null;
     if (swapValue && fromId) {
       const [swapDate, swapLevel] = swapValue.split('|');
       const swapRecord = history.find((h) => h.date === swapDate);
       if (swapRecord) {
+        swapRecordRef = swapRecord;
         changeLog.push({
           id: uid('chg'),
           date: swapDate,
@@ -3164,8 +3174,27 @@ function openChangeModal(date, level) {
     closeChangeModal();
     renderHistoryTable();
     renderCheckTable();
+    alertIfChangeViolations(swapApplied ? [record, swapRecordRef] : [record]);
     showToast(swapApplied ? '交代を反映しました（交換として2件の日付に反映）' : '交代を反映しました');
   });
+}
+/** 「交代を反映」の直後、変更後の組合せに資格要件・性別一致・同一課・課長補佐や副主幹の
+ *  組合せ等の違反があれば、日付・曜日・理由をポップアップで知らせる（勤務表作成タブの
+ *  手動編集後の通知と同じ考え方。6.5.7c節）。「交代を反映」は同一処理期内の担当回数や
+ *  過去のペアとの重複までは判定しない（この画面は事実の記録が目的で、そこまでの
+ *  ルール確認は勤務表作成タブで行う想定のため）。 */
+function alertIfChangeViolations(records) {
+  const flagged = records
+    .filter(Boolean)
+    .map((rec) => {
+      const s = rec.seniorId ? staffById(rec.seniorId) : null;
+      const j = rec.juniorId ? staffById(rec.juniorId) : null;
+      const violations = validateManualPair(s, j);
+      return violations.length ? `${rec.date}（${WEEKDAY_LABEL[rec.weekday]}）：${violations.join(' / ')}` : null;
+    })
+    .filter(Boolean);
+  if (!flagged.length) return;
+  alert('交代後の組合せにルール違反があります。\n\n' + flagged.join('\n'));
 }
 function closeChangeModal() {
   document.getElementById('modal-root').innerHTML = '';
