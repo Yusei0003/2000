@@ -19,6 +19,7 @@ const KEY_HISTORY_STAFF = 'duty_history_staff_v1'; // 勤務実績取込のみ�
 const KEY_IMPORT_EXCLUDED = 'duty_import_excluded_v1'; // 処理期ID→Excel名簿取込時に除外された行の一覧（CSV書出用）
 const KEY_GEN_SESSION = 'duty_gen_session_v1'; // 処理期ID→勤務表作成タブの作業状態（決裁・確定・引き戻し履歴を含む）
 const KEY_CHANGE_LOG = 'duty_change_log_v1'; // 「交代を反映」の履歴（変更前後の職員を記録。交換ペアの検出に使用）
+const KEY_BACKUP_STATE = 'duty_backup_state_v1'; // 最後にバックアップした日時と、それ以降の変更件数
 
 const DEFAULT_SETTINGS = {
   minGapDays: 120,
@@ -272,6 +273,7 @@ let periodImportExcluded = load(KEY_IMPORT_EXCLUDED, {}); // 処理期ID -> Exce
 let genSessions = load(KEY_GEN_SESSION, {}); // 処理期ID -> 勤務表作成タブの作業状態
 let historyStaffStubs = load(KEY_HISTORY_STAFF, []); // どの処理期の名簿にもいない、勤務実績のみの職員
 let changeLog = load(KEY_CHANGE_LOG, []); // 「交代を反映」のたびに変更前後の職員を記録する（交換ペアの検出用）
+let backupState = load(KEY_BACKUP_STATE, { lastBackupAt: null, pendingChanges: 0 });
 
 /** 職員番号に対応する恒久的な職員IDを返す（無ければ新規発行して記憶する） */
 function idForNumber(number) {
@@ -2546,6 +2548,7 @@ function initGenerateRun() {
     renderGenDatesTable();
     renderGenResultTable();
     showToast('決裁済みとして確定し、履歴に保存しました');
+    notifyDataChanged(`${p.label}の勤務表を確定し、履歴に保存しました（${withLabel.length}日分）。`);
   });
 
   document.getElementById('gen-revert').addEventListener('click', () => {
@@ -2914,6 +2917,12 @@ document.addEventListener('click', (e) => {
 /** 変更届のテキスト（OCR結果、またはグループウェア等からの直接貼り付け）から、交代後の氏名・
  *  申請日時をプレフィルする。結果は下書きとして入力欄にセットするだけで、反映には引き続き
  *  「反映する」の操作が必要。戻り値は画面表示用のメッセージ配列。 */
+/** 読み取り結果のメッセージを表示用HTMLにする。「⚠」で始まる行は確認が必要な内容なので
+ *  赤字・太字にして目立たせる。 */
+function changeMessageHtml(m) {
+  const text = escapeHtml(m);
+  return String(m).startsWith('⚠') ? `<strong style="color:var(--danger)">${text}</strong>` : text;
+}
 function applyChangeDraftFromText(text, targetDate, candidates, currentName) {
   const nameRaw = extractLabelValue(text, '交代相手氏名');
   const applicantRaw = extractLabelValue(text, '申請者');
@@ -2921,10 +2930,25 @@ function applyChangeDraftFromText(text, targetDate, candidates, currentName) {
   const changedDateRaw = extractLabelValue(text, '変更する日付');
 
   const messages = [];
+  // 変更届は「申請者本人の行」で貼り付ける運用。別の行に貼られた場合は、そのまま入力すると
+  // 誤った担当者を書き換えてしまうため、何も入力せずに正しい行を案内する。
+  const normalizeName = (s) => String(s || '').replace(/[\s　]+/g, '');
+  if (applicantRaw && currentName && normalizeName(applicantRaw) !== normalizeName(currentName)) {
+    return { messages: [], wrongRow: true, applicantName: applicantRaw, currentName, slot: findApplicantSlot(applicantRaw, targetDate) };
+  }
+  // 「変更する日付」は交代相手が担当している日（＝申請者が代わりに入る日）。氏名の照合より
+  // 先に読み取っておき、氏名を自動選択したときに交換相手の日として自動的に選べるようにする。
+  pendingSwapDate = parseOcrDate(changedDateRaw);
+  swapDateUnresolved = false;
+
   const matched = nameRaw ? bestNameMatch(nameRaw, candidates) : null;
   if (matched) {
-    document.getElementById('change-new-staff').value = matched.id;
-    messages.push(`交代後の氏名：${matched.name} を選択しました（読み取り結果「${nameRaw}」）`);
+    const sel = document.getElementById('change-new-staff');
+    sel.value = matched.id;
+    // プログラムで値を入れただけでは change イベントが発生せず、交換候補（あわせて交換
+    // しますか？）が作られないため、明示的に発火させる
+    sel.dispatchEvent(new Event('change'));
+    // 読み取れた内容は下の「反映される内容」カードに表示するため、ここでは文章にしない
   } else if (nameRaw) {
     messages.push(`交代相手氏名「${nameRaw}」を読み取りましたが、名簿の職員と一致しませんでした。手動で選択してください。`);
   } else {
@@ -2934,24 +2958,103 @@ function applyChangeDraftFromText(text, targetDate, candidates, currentName) {
   const appliedAt = parseOcrDateTime(appliedRaw);
   if (appliedAt) {
     document.getElementById('change-applied-at').value = appliedAt;
-    messages.push(`申請日時：${appliedAt.replace('T', ' ')} を入力しました`);
+    // 読み取れた内容は「反映される内容」カードに表示するため、ここでは文章にしない
   } else {
     messages.push('申請日時を読み取れませんでした。手動で入力してください。');
   }
 
-  const changedDate = parseOcrDate(changedDateRaw);
-  if (changedDate && changedDate !== targetDate) {
-    messages.push(`⚠ 読み取った変更対象日（${changedDate}）が、この行の日付（${targetDate}）と一致しません。別の変更届でないかご確認ください。`);
-  }
-
-  if (applicantRaw && currentName) {
-    const normalize = (s) => String(s || '').replace(/[\s　]+/g, '');
-    if (normalize(applicantRaw) !== normalize(currentName)) {
-      messages.push(`⚠ 申請者「${applicantRaw}」が、現在の担当者「${currentName}」と一致しません。別の変更届でないかご確認ください。`);
+  // 「変更する日付」は、交代相手が担当している日でなければならない（申請者はその日へ移る）。
+  // 一致する担当日があれば交換相手として自動選択済みなので、その旨を案内する。見つからない
+  // 場合は入力ミスの可能性があるため、エラーとして知らせる。
+  const changedDate = pendingSwapDate;
+  if (changedDate && matched) {
+    const swapSel = document.getElementById('change-swap-target');
+    const picked = swapSel && swapSel.value && swapSel.value.split('|')[0] === changedDate;
+    if (picked) {
+      // 交換する内容は「反映される内容」カードに表示するため、ここでは文章にしない
+    } else {
+      swapDateUnresolved = true;
+      messages.push(
+        `⚠ 変更する日付（${changedDate}）に、交代相手（${matched.name}）さんの担当予定が見つかりません。` +
+          `日付の入力ミスか、既に別の変更が入っている可能性があります。ご確認ください。`
+      );
     }
+  } else if (changedDate) {
+    messages.push(`変更する日付（${changedDate}）を読み取りました。交代後の氏名を選ぶと、あわせて交換する日として自動的に選択します。`);
   }
 
-  return messages;
+  if (refreshChangeSummary) refreshChangeSummary();
+  // 必須項目（交代後の氏名・申請日時）が埋まらなかった場合や、交換する日を決められなかった
+  // 場合は、手で直せるように入力欄を開く
+  const manualBox = document.getElementById('change-manual');
+  if (manualBox) {
+    const needsManual =
+      !document.getElementById('change-new-staff').value ||
+      !document.getElementById('change-applied-at').value ||
+      swapDateUnresolved;
+    if (needsManual) manualBox.hidden = false;
+  }
+  return { messages, wrongRow: false };
+}
+/** 変更届の申請者が、いまどの日・どの欄を担当しているかを探す（同じ処理期の中）。
+ *  貼り付ける行を間違えたときに、正しい行を案内するために使う。 */
+function findApplicantSlot(applicantRaw, targetDate) {
+  const rec = history.find((r) => r.date === targetDate);
+  if (!rec) return null;
+  const normalize = (s) => String(s || '').replace(/[\s　]+/g, '');
+  const want = normalize(applicantRaw);
+  const hit = history
+    .filter((h) => h.periodId === rec.periodId)
+    .map((h) =>
+      normalize(h.seniorName) === want
+        ? { date: h.date, weekday: h.weekday, level: 'senior' }
+        : normalize(h.juniorName) === want
+        ? { date: h.date, weekday: h.weekday, level: 'junior' }
+        : null
+    )
+    .filter(Boolean)
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+  return hit.length ? hit : null;
+}
+/** 読み取り結果（正常／行違い）を、状況欄に表示するHTMLにする。 */
+function changeStatusHtml(result) {
+  if (result.wrongRow) {
+    const slots = result.slot;
+    const guide = slots
+      ? `<br>${escapeHtml(result.applicantName)}さんの担当：` +
+        slots
+          .map(
+            (o) =>
+              `<br>　${o.date}（${WEEKDAY_LABEL[o.weekday]}・${LEVEL_LABEL[o.level]}）` +
+              ` <button type="button" class="btn-secondary change-jump-btn" data-date="${o.date}" data-level="${o.level}">この行を開く</button>`
+          )
+          .join('')
+      : `<br>${escapeHtml(result.applicantName)}さんの担当予定が、この処理期に見つかりません。`;
+    return (
+      `<strong style="color:var(--danger)">⚠ 貼り付ける行が違います。` +
+      `この変更届の申請者は「${escapeHtml(result.applicantName)}」さんですが、この行の担当は「${escapeHtml(result.currentName)}」さんです。` +
+      `</strong>${guide}`
+    );
+  }
+  return (
+    (result.messages.length ? result.messages.map(changeMessageHtml).join('<br>') + '<br>' : '') +
+    '読み取りました。下の内容を確認のうえ「反映する」を押してください。'
+  );
+}
+/** 「この行を開く」を押したときに、貼り付けたテキストを引き継いで正しい行のモーダルを開く。 */
+function wireChangeJumpButtons(statusEl) {
+  if (!statusEl) return;
+  statusEl.querySelectorAll('.change-jump-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const text = document.getElementById('change-text-input').value;
+      openChangeModal(btn.dataset.date, btn.dataset.level);
+      const input = document.getElementById('change-text-input');
+      if (input) {
+        input.value = text;
+        document.getElementById('change-text-parse-btn').click();
+      }
+    });
+  });
 }
 /** 変更届のスクリーンショットをOCRで読み取り、applyChangeDraftFromText で下書きに反映する。 */
 async function runChangeOcr(file, targetDate, candidates, currentName) {
@@ -2970,8 +3073,11 @@ async function runChangeOcr(file, targetDate, candidates, currentName) {
       gzip: true,
     });
     const { data } = await worker.recognize(file);
-    const messages = applyChangeDraftFromText(data.text, targetDate, candidates, currentName);
-    if (statusEl) statusEl.innerHTML = messages.map((m) => escapeHtml(m)).join('<br>') + '<br>内容を確認のうえ「反映する」を押してください。';
+    const result = applyChangeDraftFromText(data.text, targetDate, candidates, currentName);
+    if (statusEl) {
+      statusEl.innerHTML = changeStatusHtml(result);
+      wireChangeJumpButtons(statusEl);
+    }
   } catch (err) {
     if (statusEl) statusEl.textContent = '読み取りに失敗しました：' + (err && err.message ? err.message : String(err)) + '（手入力をご利用ください）';
   } finally {
@@ -2985,8 +3091,11 @@ function runChangeTextPaste(text, targetDate, candidates, currentName, statusEl)
     if (statusEl) statusEl.textContent = '貼り付けたテキストが空です。';
     return;
   }
-  const messages = applyChangeDraftFromText(text, targetDate, candidates, currentName);
-  if (statusEl) statusEl.innerHTML = messages.map((m) => escapeHtml(m)).join('<br>') + '<br>内容を確認のうえ「反映する」を押してください。';
+  const result = applyChangeDraftFromText(text, targetDate, candidates, currentName);
+  if (statusEl) {
+    statusEl.innerHTML = changeStatusHtml(result);
+    wireChangeJumpButtons(statusEl);
+  }
 }
 /** 指定した職員が、同じ処理期内の他の日に割り当てられている箇所（係長級・主事級を問わない）を
  *  すべて返す。「交代を反映」で選んだ交代相手が別の日にも担当予定の場合、その日をあわせて
@@ -3002,9 +3111,19 @@ function findOtherAssignments(staffId, periodId, excludeDate) {
     }))
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
+/** 変更届から読み取った「変更する日付」（＝交代相手の担当日）。交代後の氏名を選んだ時点で、
+ *  あわせて交換する日として自動選択するために覚えておく。 */
+let pendingSwapDate = null;
+/** 読み取った「変更する日付」に交代相手の担当予定が見つからなかったかどうか。
+ *  見つからないまま「反映する」を押したときに確認ダイアログを出すために使う。 */
+let swapDateUnresolved = false;
+/** 開いているモーダルの「反映される内容」表示を作り直す関数（モーダルを開くたびに差し替える） */
+let refreshChangeSummary = null;
 function openChangeModal(date, level) {
   const record = history.find((r) => r.date === date);
   if (!record) return;
+  pendingSwapDate = null;
+  swapDateUnresolved = false;
   const currentName = level === 'senior' ? record.seniorName : record.juniorName;
   const currentId = level === 'senior' ? record.seniorId : record.juniorId;
   // 1人目（senior）は、資格要件（8.3.14）を満たす職員＝係長級、または市民課経験のある主事級から選べる。
@@ -3034,8 +3153,13 @@ function openChangeModal(date, level) {
   root.innerHTML = `
     <div class="modal-backdrop" id="change-modal-backdrop">
       <div class="modal-box">
-        <h3>交代を反映（${escapeHtml(date)}・${LEVEL_LABEL[level]}）</h3>
-        <p class="hint">現在：${escapeHtml(currentName || '未定')}</p>
+        <h3>交代を反映</h3>
+        <p class="change-target">
+          <span class="change-target-date">${escapeHtml(date)}（${WEEKDAY_LABEL[record.weekday]}）・${LEVEL_LABEL[level]}</span>
+          <span class="change-target-name">${escapeHtml(currentName || '未定')}</span>
+          <span class="change-target-note">さんの担当を交代します</span>
+        </p>
+        <p class="hint"><strong class="hint-do">変更届は、申請者本人（＝この行の担当者）の行で貼り付けてください。</strong></p>
         <label>変更届のテキストを貼り付ける（任意）
           <textarea id="change-text-input" rows="5" placeholder="グループウェア等の申請内容画面をコピーしてここに貼り付けてください"></textarea>
         </label>
@@ -3043,20 +3167,24 @@ function openChangeModal(date, level) {
           <button id="change-text-parse-btn" class="btn-secondary">貼り付けたテキストから読み取る</button>
         </div>
         <p class="hint" id="change-text-status"></p>
-        ${ocrSectionHtml}
-        <div class="grid-form">
-          <label>交代後の氏名
-            <select id="change-new-staff"><option value="">選択してください</option>${options}</select>
-          </label>
-          <label>申請日時（変更届に記載の日時）
-            <input type="datetime-local" id="change-applied-at">
-          </label>
-        </div>
-        <div id="change-swap-section" class="hidden">
-          <label>交代後の職員は、同じ処理期の他の日にも担当予定があります。あわせて交換しますか？
-            <select id="change-swap-target"></select>
-          </label>
-          <p class="hint">選んだ日の担当を、この行の元の担当者（${escapeHtml(currentName || '未定')}）に交代します。1回の操作で両方の変更が反映されます。</p>
+        <div id="change-summary"></div>
+        <p class="hint" style="margin:4px 0 10px"><button type="button" id="change-manual-toggle" class="link-btn">手動で入力・修正する</button></p>
+        <div id="change-manual" hidden>
+          ${ocrSectionHtml}
+          <div class="grid-form">
+            <label>交代後の氏名
+              <select id="change-new-staff"><option value="">選択してください</option>${options}</select>
+            </label>
+            <label>申請日時（変更届に記載の日時）
+              <input type="datetime-local" id="change-applied-at">
+            </label>
+          </div>
+          <div id="change-swap-section" class="hidden">
+            <label>交代後の職員は、同じ処理期の他の日にも担当予定があります。あわせて交換しますか？
+              <select id="change-swap-target"></select>
+            </label>
+            <p class="hint">選んだ日の担当を、この行の元の担当者（${escapeHtml(currentName || '未定')}）に交代します。1回の操作で両方の変更が反映されます。</p>
+          </div>
         </div>
         <div class="row-actions">
           <button id="change-confirm" class="btn-primary">反映する</button>
@@ -3065,6 +3193,55 @@ function openChangeModal(date, level) {
       </div>
     </div>`;
 
+  // 反映される内容（どの日の誰と、どの日の誰を入れ替えるのか）を、入力欄の状態から組み立てて
+  // 「反映する」の直前に表示する。プルダウンを手で変えたときも同じ内容に追従させる。
+  const renderChangeSummary = () => {
+    const box = document.getElementById('change-summary');
+    if (!box) return;
+    const newId = document.getElementById('change-new-staff').value;
+    const newStaff = newId ? staffById(newId) : null;
+    if (!newStaff) {
+      box.innerHTML = '';
+      return;
+    }
+    const appliedRaw = document.getElementById('change-applied-at').value;
+    const appliedHtml = appliedRaw
+      ? `<p class="swap-applied">申請日時：${escapeHtml(appliedRaw.replace('T', ' '))}</p>`
+      : '<p class="swap-applied" style="color:var(--danger)">申請日時が未入力です</p>';
+    const thisDay = `${date}（${WEEKDAY_LABEL[record.weekday]}）`;
+    const swapSel = document.getElementById('change-swap-target');
+    const swapValue = swapSel && !swapSection.classList.contains('hidden') ? swapSel.value : '';
+    if (swapValue) {
+      const [swapDate] = swapValue.split('|');
+      const swapRec = history.find((h) => h.date === swapDate);
+      const otherDay = `${swapDate}（${WEEKDAY_LABEL[swapRec ? swapRec.weekday : '']}）`;
+      box.innerHTML =
+        `<div class="swap-card">
+          <div class="swap-side"><div class="swap-date">${escapeHtml(thisDay)}</div><div class="swap-name">${escapeHtml(currentName || '未定')}</div></div>
+          <div class="swap-arrow">←→</div>
+          <div class="swap-side"><div class="swap-date">${escapeHtml(otherDay)}</div><div class="swap-name">${escapeHtml(newStaff.name)}</div></div>
+        </div>
+        <p class="swap-caption">この2日の担当を<strong>入れ替えます</strong></p>${appliedHtml}`;
+    } else {
+      box.innerHTML =
+        `<div class="swap-card">
+          <div class="swap-side"><div class="swap-date">${escapeHtml(thisDay)}</div><div class="swap-name">${escapeHtml(currentName || '未定')}</div></div>
+          <div class="swap-arrow">→</div>
+          <div class="swap-side"><div class="swap-date">&nbsp;</div><div class="swap-name">${escapeHtml(newStaff.name)}</div></div>
+        </div>
+        <p class="swap-caption">この日の担当を<strong>交代します</strong>（片道）</p>${appliedHtml}`;
+    }
+  };
+
+  refreshChangeSummary = renderChangeSummary;
+  // 手動の入力欄（氏名・申請日時・交換相手・スクリーンショット読取）は、ふだんは隠しておく。
+  // 変更届のテキストを貼り付ければ自動で埋まるため、通常は見る必要がないもの。
+  // 読み取れなかった項目があるときは自動的に開く。
+  const manualBox = document.getElementById('change-manual');
+  document.getElementById('change-manual-toggle').addEventListener('click', () => {
+    manualBox.hidden = !manualBox.hidden;
+  });
+  document.getElementById('change-applied-at').addEventListener('change', renderChangeSummary);
   document.getElementById('change-cancel').addEventListener('click', closeChangeModal);
   document.getElementById('change-modal-backdrop').addEventListener('click', (e) => {
     if (e.target.id === 'change-modal-backdrop') closeChangeModal();
@@ -3084,15 +3261,18 @@ function openChangeModal(date, level) {
 
   const swapSection = document.getElementById('change-swap-section');
   const swapTargetSelect = document.getElementById('change-swap-target');
+  swapTargetSelect.addEventListener('change', renderChangeSummary);
   document.getElementById('change-new-staff').addEventListener('change', (e) => {
     const newId = e.target.value;
     if (!newId || !currentId) {
       swapSection.classList.add('hidden');
+      renderChangeSummary();
       return;
     }
     const others = findOtherAssignments(newId, record.periodId, date);
     if (!others.length) {
       swapSection.classList.add('hidden');
+      renderChangeSummary();
       return;
     }
     swapTargetSelect.innerHTML =
@@ -3100,7 +3280,13 @@ function openChangeModal(date, level) {
       others
         .map((o) => `<option value="${o.date}|${o.level}">${o.date}（${WEEKDAY_LABEL[o.weekday]}・${LEVEL_LABEL[o.level]}）</option>`)
         .join('');
+    // 変更届から読み取った「変更する日付」＝交代相手の担当日。その日が候補にあれば自動で選ぶ
+    if (pendingSwapDate) {
+      const hit = others.find((o) => o.date === pendingSwapDate);
+      if (hit) swapTargetSelect.value = `${hit.date}|${hit.level}`;
+    }
     swapSection.classList.remove('hidden');
+    renderChangeSummary();
   });
 
   document.getElementById('change-confirm').addEventListener('click', () => {
@@ -3109,6 +3295,16 @@ function openChangeModal(date, level) {
     if (!newId || !appliedAtRaw) {
       alert('交代後の氏名と申請日時を入力してください');
       return;
+    }
+    // 「変更する日付」に交代相手の担当予定が見つかっていない場合は、入力ミスの可能性が高い。
+    // そのまま反映すると交代相手が二重に入り、申請者がどこにも入らない状態になりうるため確認する。
+    const swapChosen = swapTargetSelect && !swapSection.classList.contains('hidden') && swapTargetSelect.value;
+    if (swapDateUnresolved && !swapChosen) {
+      const ok = confirm(
+        `変更する日付（${pendingSwapDate}）に交代相手の担当予定が見つかっていません。\n` +
+          `このまま片道の交代（この日の担当を交代するだけ）として反映しますか？`
+      );
+      if (!ok) return;
     }
     const newStaff = staffById(newId);
     const appliedAt = appliedAtRaw.replace('T', ' ');
@@ -3176,6 +3372,11 @@ function openChangeModal(date, level) {
     renderCheckTable();
     alertIfChangeViolations(swapApplied ? [record, swapRecordRef] : [record]);
     showToast(swapApplied ? '交代を反映しました（交換として2件の日付に反映）' : '交代を反映しました');
+    notifyDataChanged(
+      swapApplied
+        ? `${date} と ${swapRecordRef ? swapRecordRef.date : ''} の担当を入れ替えました。`
+        : `${date} の担当を ${newStaff.name} さんに交代しました。`
+    );
   });
 }
 /** 「交代を反映」の直後、変更後の組合せに資格要件・性別一致・同一課・課長補佐や副主幹の
@@ -3189,15 +3390,52 @@ function alertIfChangeViolations(records) {
     .map((rec) => {
       const s = rec.seniorId ? staffById(rec.seniorId) : null;
       const j = rec.juniorId ? staffById(rec.juniorId) : null;
-      const violations = validateManualPair(s, j);
+      const violations = validateManualPair(s, j).concat(changeDutyLoadViolations(rec));
       return violations.length ? `${rec.date}（${WEEKDAY_LABEL[rec.weekday]}）：${violations.join(' / ')}` : null;
     })
     .filter(Boolean);
   if (!flagged.length) return;
   alert('交代後の組合せにルール違反があります。\n\n' + flagged.join('\n'));
 }
+/** 交代後の担当者について、同一処理期内の担当回数（目安超過）と、他の担当日との間隔
+ *  （最低間隔日数を下回っていないか）を判定する。交換の反映が漏れて同じ職員が二重に
+ *  入ってしまった場合は、間隔の判定でほぼ確実に検出できる。 */
+function changeDutyLoadViolations(rec) {
+  const reasons = [];
+  const scoped = history.filter((h) => h.periodId === rec.periodId);
+  // 1人あたりの担当回数の目安（勤務表作成タブと同じ考え方）
+  const p = periodById(rec.periodId) || currentPeriod();
+  const targetCount = staff.filter(
+    (s) => s.active !== false && !!s.gender && !isStandingExcluded(s, p.standingExcludedDepts)
+  ).length;
+  const fairShare = Math.max(1, Math.ceil((scoped.length * 2) / (targetCount || 1)));
+  [rec.seniorId, rec.juniorId].filter(Boolean).forEach((id) => {
+    const person = staffById(id);
+    const name = person ? person.name : '';
+    const dates = scoped
+      .filter((h) => h.seniorId === id || h.juniorId === id)
+      .map((h) => h.date);
+    if (dates.length > fairShare) {
+      reasons.push(`${name}さんは同一処理期内で${dates.length}回目の割当です（1人あたりの目安${fairShare}回を超えています）`);
+    }
+    const others = dates.filter((d) => d !== rec.date);
+    if (!others.length) return;
+    const nearest = others.reduce(
+      (best, d) => {
+        const gap = Math.abs(diffDays(parseISO(rec.date), parseISO(d)));
+        return gap < best.gap ? { gap, date: d } : best;
+      },
+      { gap: Infinity, date: null }
+    );
+    if (nearest.date && nearest.gap < settings.minGapDays) {
+      reasons.push(`${name}さんは他の担当日（${nearest.date}）と${nearest.gap}日しか空いていません（最低間隔${settings.minGapDays}日）`);
+    }
+  });
+  return reasons;
+}
 function closeChangeModal() {
   document.getElementById('modal-root').innerHTML = '';
+  refreshChangeSummary = null;
 }
 
 /* ------------------------------------------------------------
@@ -3222,25 +3460,95 @@ const BACKUP_KEYS = {
   currentPeriodId: KEY_CURRENT_PERIOD,
   changeLog: KEY_CHANGE_LOG,
 };
-function initBackup() {
-  document.getElementById('backup-export-btn').addEventListener('click', () => {
-    const data = {};
-    Object.entries(BACKUP_KEYS).forEach(([name, key]) => {
-      data[name] = load(key, null);
-    });
-    const payload = {
-      app: '日直勤務表 自動作成アプリ',
-      backupVersion: 1,
-      exportedAt: new Date().toISOString(),
-      data,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const now = new Date();
-    const stamp =
-      toISO(now).replace(/-/g, '') + '-' + String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
-    downloadBlob(`日直勤務表_バックアップ_${stamp}.json`, blob);
-    showToast('バックアップを作成しました');
+/* ------------------------------------------------------------
+ * バックアップの促し
+ * データはこの端末のブラウザにしか保存されないため、勤務表の確定・変更届の反映など
+ * 失うと痛い作業の直後に、その場でバックアップを作成できるポップアップを出す。
+ * ------------------------------------------------------------ */
+/** 最後にバックアップした日時を「データのバックアップ」欄に表示する */
+function renderBackupStatus() {
+  const el = document.getElementById('backup-status');
+  if (!el) return;
+  if (!backupState.lastBackupAt) {
+    const n = backupState.pendingChanges || 0;
+    el.innerHTML =
+      '<strong style="color:var(--danger)">まだ一度もバックアップを作成していません。</strong>' +
+      (n ? `<strong style="color:var(--danger)">（未バックアップの変更 ${n} 件）</strong>` : '');
+    return;
+  }
+  const d = new Date(backupState.lastBackupAt);
+  const stamp = `${toISO(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const pending = backupState.pendingChanges || 0;
+  el.innerHTML =
+    `前回のバックアップ：${stamp}` +
+    (pending
+      ? ` / <strong style="color:var(--danger)">それ以降の変更 ${pending} 件（未バックアップ）</strong>`
+      : ' / それ以降の変更はありません');
+}
+/** 失うと痛い作業をしたときに呼ぶ。変更件数を数え、その場でバックアップできるポップアップを出す。 */
+function notifyDataChanged(actionLabel) {
+  backupState.pendingChanges = (backupState.pendingChanges || 0) + 1;
+  save(KEY_BACKUP_STATE, backupState);
+  renderBackupStatus();
+  openBackupReminder(actionLabel);
+}
+function openBackupReminder(actionLabel) {
+  const root = document.getElementById('backup-modal-root');
+  if (!root) return;
+  const last = backupState.lastBackupAt ? new Date(backupState.lastBackupAt) : null;
+  const lastText = last
+    ? `${toISO(last)} ${String(last.getHours()).padStart(2, '0')}:${String(last.getMinutes()).padStart(2, '0')}`
+    : 'まだ作成されていません';
+  root.innerHTML = `
+    <div class="modal-backdrop" id="backup-modal-backdrop">
+      <div class="modal-box">
+        <h3>バックアップを作成してください</h3>
+        <p style="margin:0 0 10px"><strong>${escapeHtml(actionLabel)}</strong></p>
+        <p class="hint" style="margin:0 0 12px">このアプリのデータは<strong class="hint-do">この端末のブラウザの中だけ</strong>に保存されています。ブラウザのデータ消去や端末の故障で消えると、復元できません。</p>
+        <div class="backup-state-box">
+          <div>前回のバックアップ：${escapeHtml(lastText)}</div>
+          <div><strong style="color:var(--danger)">それ以降の変更：${backupState.pendingChanges} 件</strong></div>
+        </div>
+        <div class="row-actions">
+          <button id="backup-now-btn" class="btn-primary">バックアップを作成する</button>
+          <button id="backup-later-btn" class="btn-secondary">あとで</button>
+        </div>
+      </div>
+    </div>`;
+  const close = () => { root.innerHTML = ''; };
+  document.getElementById('backup-modal-backdrop').addEventListener('click', (e) => {
+    if (e.target.id === 'backup-modal-backdrop') close();
   });
+  document.getElementById('backup-later-btn').addEventListener('click', close);
+  document.getElementById('backup-now-btn').addEventListener('click', () => {
+    exportBackupFile();
+    close();
+  });
+}
+/** 全データをJSONファイルとして書き出す。バックアップ促しのポップアップからも呼ぶ。 */
+function exportBackupFile() {
+  const data = {};
+  Object.entries(BACKUP_KEYS).forEach(([name, key]) => {
+    data[name] = load(key, null);
+  });
+  const payload = {
+    app: '日直勤務表 自動作成アプリ',
+    backupVersion: 1,
+    exportedAt: new Date().toISOString(),
+    data,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const now = new Date();
+  const stamp =
+    toISO(now).replace(/-/g, '') + '-' + String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
+  downloadBlob(`日直勤務表_バックアップ_${stamp}.json`, blob);
+  backupState = { lastBackupAt: now.toISOString(), pendingChanges: 0 };
+  save(KEY_BACKUP_STATE, backupState);
+  renderBackupStatus();
+  showToast('バックアップを作成しました');
+}
+function initBackup() {
+  document.getElementById('backup-export-btn').addEventListener('click', exportBackupFile);
 
   document.getElementById('backup-import-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -4139,6 +4447,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initStaffXlsxImport();
   initHistoryXlsxImport();
   initBackup();
+  renderBackupStatus();
   initHandoverExport();
   initHistoryPdf();
   initOptions();
