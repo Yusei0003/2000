@@ -15,6 +15,7 @@
     width: 297mm; height: 210mm; box-sizing: border-box;
     padding: 14mm 16mm 12mm; page-break-after: always;
     position: relative; overflow: hidden;
+    display: flex; flex-direction: column;
   }
   .page:last-child { page-break-after: auto; }
 
@@ -41,13 +42,14 @@
   .lead { font-size: 13pt; margin: 5mm 0 4mm; font-weight: 700; }
   .lead .click { color: #c0392b; }
 
-  .body2 { display: flex; gap: 8mm; align-items: flex-start; }
-  .body2 .left { width: 88mm; flex: none; }
+  /* 本文は残り全体を使い、上下方向の中央に置く（下だけ大きく空かないように） */
+  .body2 { display: flex; gap: 8mm; align-items: center; flex: 1; min-height: 0; }
+  .body2 .left { width: 78mm; flex: none; }
   .body2 .right { flex: 1; min-width: 0; }
 
   figure { margin: 0; }
   figure img { width: 100%; display: block; border: 1px solid #ccd5e2; border-radius: 1.5mm; }
-  .shot2 { display: flex; gap: 5mm; align-items: flex-start; }
+  .shot2 { display: flex; gap: 5mm; align-items: center; flex: 1; min-height: 0; }
   .shot2 figure { flex: 1; min-width: 0; }
   .shot2 .arrow { align-self: center; font-size: 22pt; color: #1f4e9c; }
   figcaption { font-size: 9pt; color: #5a6a80; text-align: center; margin-top: 1.5mm; }
