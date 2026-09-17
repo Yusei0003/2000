@@ -120,6 +120,25 @@
   .flow .fitem b { color: #1f4e9c; }
   .flow .farrow { text-align: center; color: #1f4e9c; font-size: 11pt; line-height: 1.1; margin-bottom: 1mm; }
 
+  /* ---- 年間スケジュール（はじめに） ---- */
+  .sched {
+    border: 2.5px solid #1f4e9c; border-radius: 3mm; overflow: hidden;
+    margin: 4mm 0 6mm; page-break-inside: avoid;
+  }
+  .sched .sched-head {
+    background: #1f4e9c; color: #fff; padding: 3mm 5mm;
+    font-size: 12.5pt; font-weight: 700;
+  }
+  .sched .sched-head span { font-size: 9.5pt; font-weight: 400; opacity: .85; margin-left: 3mm; }
+  .sched table { margin: 0; border: none; font-size: 10pt; }
+  .sched th, .sched td { border: none; border-bottom: 1px solid #dbe4f2; padding: 3mm 5mm; }
+  .sched tr:last-child th, .sched tr:last-child td { border-bottom: none; }
+  .sched th {
+    background: #f5f8fd; color: #1f4e9c; width: 26mm; font-size: 11pt;
+    text-align: center; vertical-align: middle;
+  }
+  .sched td .ref { display: block; font-size: 9pt; color: #5a6a80; margin-top: .8mm; }
+
   code {
     font-family: "IPAGothic", monospace; background: #eef2f8;
     padding: .3mm 1.5mm; border-radius: 1mm; font-size: 9.5pt;
@@ -156,6 +175,7 @@
       <div class="chap">はじめに</div>
       <ul>
         <li>このアプリでできること</li>
+        <li><strong>1年間の作業スケジュール</strong></li>
         <li>画面の全体像（7つのタブ）</li>
         <li>はじめに覚えておく3つのこと</li>
       </ul>
@@ -205,8 +225,7 @@
       <div class="chap">付録</div>
       <ul>
         <li>付録A　用語集</li>
-        <li>付録B　1年間の作業スケジュール</li>
-        <li>付録C　困ったときの調べ方</li>
+        <li>付録B　困ったときの調べ方</li>
       </ul>
     </li>
   </ol>
@@ -226,6 +245,55 @@
   作成した勤務表は履歴として保存され、変更届による交代もこのアプリの上で反映できます。
   Webブラウザだけで動き、サーバーは必要ありません。
 </p>
+
+<h3>1年間の作業スケジュール</h3>
+<p>この仕事は、1年に2回の「勤務表づくり」と、随時の「交代の反映」でできています。まず全体をつかんでください。</p>
+
+<div class="sched">
+  <div class="sched-head">1年間にやること<span>― どの章を読めばよいかもここで分かります</span></div>
+  <table>
+    <tr>
+      <th>3月ごろ</th>
+      <td>
+        <strong>前期（4〜9月）の勤務表を作る</strong>
+        処理期を作り、異動後の名簿を取り込んで作成し、決裁を受けて確定します。
+        <span class="ref">→ 第2章「勤務表を作る」</span>
+      </td>
+    </tr>
+    <tr>
+      <th>9月ごろ</th>
+      <td>
+        <strong>後期（10〜翌3月）の勤務表を作る</strong>
+        前期と同じ手順です。
+        <span class="ref">→ 第2章「勤務表を作る」</span>
+      </td>
+    </tr>
+    <tr>
+      <th>随時</th>
+      <td>
+        <strong>変更届が届いたら交代を反映する</strong>
+        確定済みの勤務表に、変更届の内容を反映します。
+        <span class="ref">→ 第3章「変更届による交代を反映する」</span>
+      </td>
+    </tr>
+    <tr>
+      <th>作業の<br>たび</th>
+      <td>
+        <strong>バックアップを作る</strong>
+        勤務表の確定後・交代の反映後は、その場でお知らせが出ます。作ったファイルは別の場所に保存します。
+        <span class="ref">→ 2-10／3-7</span>
+      </td>
+    </tr>
+    <tr>
+      <th>担当が<br>替わるとき</th>
+      <td>
+        <strong>バックアップファイルを引き継ぐ／復元する</strong>
+        新しい担当者は、まず復元から始めます。
+        <span class="ref">→ 第1章「使い始め ― バックアップから復元する」</span>
+      </td>
+    </tr>
+  </table>
+</div>
 
 <div class="warn">
   <span class="bt">いちばん大事な注意</span>
@@ -782,6 +850,20 @@
   <img src="images/fig3-6.png" alt="交代の反映後に表示されるバックアップ作成のポップアップ" class="narrow">
   <figcaption>交代を反映した直後にも、バックアップのお知らせが出ます。</figcaption>
 </figure>
+<div class="tip">
+  <span class="bt">変更届が何件もあるときは、まとめて最後に作って構いません</span>
+  <p>
+    このお知らせは、交代を1件反映するたびに出ます。
+    何件もまとめて処理するときは、<strong>途中は「あとで」を押して先に進み、
+    全部の反映が終わってから1回だけバックアップを作れば大丈夫です。</strong>
+  </p>
+  <p style="margin-top:2mm">
+    その場合は、<strong class="hl">最後の1件が終わったら忘れずに作ってください。</strong>
+    「履歴・確認」タブの「データのバックアップ」欄に
+    <span class="em-red">それ以降の変更 〇件（未バックアップ）</span>と赤字で件数が出ます。
+    作り忘れていないかは、いつでもそこで確認できます。
+  </p>
+</div>
 
 <h3>3-8　交代した記録を一覧で確認する</h3>
 <p>
@@ -859,17 +941,7 @@
   <tr><td>引き戻し</td><td>確定した勤務表を、修正できる状態に戻すこと。</td></tr>
 </table>
 
-<h3>付録B　1年間の作業スケジュール</h3>
-<table>
-  <tr><th>時期</th><th>すること</th><th>参照</th></tr>
-  <tr><td>3月ごろ</td><td>前期（4〜9月）の処理期を作り、異動後の名簿を取り込んで勤務表を作成・決裁・確定</td><td>第2章</td></tr>
-  <tr><td>9月ごろ</td><td>後期（10〜翌3月）の処理期を作り、同様に作成・決裁・確定</td><td>第2章</td></tr>
-  <tr><td>随時</td><td>変更届が届いたら交代を反映</td><td>第3章</td></tr>
-  <tr><td>作業のたび</td><td>バックアップを作成し、共有フォルダ等に保存</td><td>2-10／3-7</td></tr>
-  <tr><td>担当交代のとき</td><td>バックアップファイルを引き継ぐ／復元する</td><td>第1章</td></tr>
-</table>
-
-<h3>付録C　困ったときの調べ方</h3>
+<h3>付録B　困ったときの調べ方</h3>
 <ol class="steps">
   <li>
     <span class="t">「使い方」タブを開く</span>

@@ -28,6 +28,8 @@ function seedScript(s) {
 async function clipOf(page, el, maxHeight) {
   await el.scrollIntoViewIfNeeded();
   await page.waitForTimeout(180);
+  await el.boundingBox();            // スクロールが落ち着いてから測り直す
+  await page.waitForTimeout(220);
   const b = await el.boundingBox();
   return {
     x: Math.max(0, b.x - 8), y: Math.max(0, b.y - 8),
@@ -238,7 +240,16 @@ async function shotRange(page, selA, selB, file, maxHeight) {
   await page.click('#change-cancel');
   await page.waitForTimeout(600);
 
-  await shotTable(page, '#history-tbody', '3-5_反映後の履歴.png', 420);
+  // 入れ替えた2日（変更日時と丸印が入った行）が見えるよう、前後の行だけ残す
+  await page.evaluate((d) => {
+    const rows = [...document.querySelectorAll('#history-tbody tr')];
+    const i = rows.findIndex((tr) => tr.innerText.includes(d));
+    rows.forEach((tr, k) => { if (k < i - 1 || k > i + 2) tr.style.display = 'none'; });
+  }, info.a.date);
+  await shotTable(page, '#history-tbody', '3-5_反映後の履歴.png', 460);
+  await page.evaluate(() => {
+    document.querySelectorAll('#history-tbody tr').forEach((tr) => { tr.style.display = ''; });
+  });
   await shotCard(page, '#change-log-tbody', '3-7_交代の一覧.png', 460);
 
   console.log('\n完了。ダイアログ:', JSON.stringify(dialogs.map((d) => d.slice(0, 70)), null, 1));
