@@ -2783,6 +2783,86 @@ function computeSwapMarkers() {
   }
   return markers;
 }
+/** 変更ログ（「交代を反映」の記録）を、一覧表示用の行に組み立てる。
+ *  2人が互いの担当日を入れ替えた2件（AさんからBさんへ／BさんからAさんへ）は1行にまとめ、
+ *  「7/10の和田さん ←→ 7/11の佐藤さん」のように、どの日の誰とどの日の誰を入れ替えたのかを示す。
+ *  表示範囲は確定済み履歴の表示フィルタ（6.6.1節）と連動させる。 */
+function buildChangeLogRows() {
+  const visibleDates = new Set(visibleHistory().map((h) => h.date));
+  const entries = changeLog
+    .filter((log) => visibleDates.has(log.date))
+    .slice()
+    .sort((a, b) => (a.loggedAt < b.loggedAt ? 1 : a.loggedAt > b.loggedAt ? -1 : 0));
+  const markers = computeSwapMarkers();
+  const used = new Set();
+  const rows = [];
+  entries.forEach((log, i) => {
+    if (used.has(log.id)) return;
+    // 互いに入れ替わる関係（AさんをBさんに／BさんをAさんに）の相手を探す
+    const partner = entries.find(
+      (other, j) =>
+        j !== i &&
+        !used.has(other.id) &&
+        other.date !== log.date &&
+        log.fromId &&
+        log.toId &&
+        other.fromId === log.toId &&
+        other.toId === log.fromId
+    );
+    used.add(log.id);
+    if (partner) used.add(partner.id);
+    const marker = markers.get(log.date + '|' + log.level);
+    rows.push({
+      loggedAt: log.loggedAt,
+      appliedAt: log.appliedAt,
+      kind: partner ? 'swap' : 'oneway',
+      color: partner && marker ? marker.color : null,
+      from: { date: log.date, level: log.level, name: log.fromName },
+      to: partner
+        ? { date: partner.date, level: partner.level, name: partner.fromName }
+        : { date: null, level: null, name: log.toName },
+    });
+  });
+  return rows;
+}
+function renderChangeLogTable() {
+  const tbody = document.getElementById('change-log-tbody');
+  if (!tbody) return;
+  const rows = buildChangeLogRows();
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted)">この表示範囲に、変更届による交代の記録はありません</td></tr>';
+    return;
+  }
+  const weekdayOf = (d) => {
+    const rec = history.find((h) => h.date === d);
+    return rec ? `（${WEEKDAY_LABEL[rec.weekday]}）` : '';
+  };
+  const slotLabel = (level) => (level === 'senior' ? '1人目' : '2人目');
+  const dot = (color) =>
+    color ? `<span class="swap-marker" style="background:${color}"></span>` : '';
+  // 「7/10・和田さん ←→ 7/11・佐藤さん」が一目で読めるよう、日付と氏名を列に分けて表示する。
+  // 片道の交代（同じ日の担当者が代わるだけ）は、2つ目の日付欄を「―」にして区別する。
+  const dateCell = (date, level) =>
+    date
+      ? `${date}${weekdayOf(date)}<div class="changelog-slot">${slotLabel(level)}</div>`
+      : '<span class="changelog-none">―</span>';
+  tbody.innerHTML = rows
+    .map((r) => {
+      const loggedText = r.loggedAt ? String(r.loggedAt).slice(0, 16).replace('T', ' ') : '';
+      const arrow = r.kind === 'swap' ? '←→' : '→';
+      return `<tr>
+        <td>${escapeHtml(loggedText)}</td>
+        <td>${r.kind === 'swap' ? '交換' : '交代'}</td>
+        <td>${dot(r.color)}${dateCell(r.from.date, r.from.level)}</td>
+        <td><strong>${escapeHtml(r.from.name || '未定')}</strong></td>
+        <td class="changelog-arrow">${arrow}</td>
+        <td>${dateCell(r.to.date, r.to.level)}</td>
+        <td><strong>${escapeHtml(r.to.name || '未定')}</strong></td>
+        <td>${escapeHtml(r.appliedAt || '')}</td>
+      </tr>`;
+    })
+    .join('');
+}
 /** 交換ペアの色マーカー（丸印）のHTML。対象でなければ空文字を返す。 */
 function swapMarkerHtml(date, level, markers) {
   const info = markers.get(date + '|' + level);
@@ -2826,6 +2906,7 @@ function renderHistoryTable() {
   tbody.querySelectorAll('.change-btn').forEach((btn) => {
     btn.addEventListener('click', () => openChangeModal(btn.dataset.date, btn.dataset.level));
   });
+  renderChangeLogTable();
 }
 function initHistoryPeriodFilter() {
   const sel = document.getElementById('history-period-filter');
@@ -3021,20 +3102,35 @@ function changeStatusHtml(result) {
   if (result.wrongRow) {
     const slots = result.slot;
     const guide = slots
-      ? `<br>${escapeHtml(result.applicantName)}さんの担当：` +
-        slots
-          .map(
-            (o) =>
-              `<br>　${o.date}（${WEEKDAY_LABEL[o.weekday]}・${LEVEL_LABEL[o.level]}）` +
-              ` <button type="button" class="btn-secondary change-jump-btn" data-date="${o.date}" data-level="${o.level}">この行を開く</button>`
-          )
-          .join('')
-      : `<br>${escapeHtml(result.applicantName)}さんの担当予定が、この処理期に見つかりません。`;
-    return (
-      `<strong style="color:var(--danger)">⚠ 貼り付ける行が違います。` +
-      `この変更届の申請者は「${escapeHtml(result.applicantName)}」さんですが、この行の担当は「${escapeHtml(result.currentName)}」さんです。` +
-      `</strong>${guide}`
-    );
+      ? `<div class="wrongrow-guide">
+           <div class="wrongrow-guide-title">${escapeHtml(result.applicantName)}さんの担当日はこちらです</div>
+           ${slots
+             .map(
+               (o) =>
+                 `<div class="wrongrow-slot">
+                    <span class="wrongrow-slot-date">${o.date}（${WEEKDAY_LABEL[o.weekday]}）・${LEVEL_LABEL[o.level]}</span>
+                    <button type="button" class="btn-primary change-jump-btn" data-date="${o.date}" data-level="${o.level}">この行に切り替える</button>
+                  </div>`
+             )
+             .join('')}
+         </div>`
+      : `<div class="wrongrow-guide">${escapeHtml(result.applicantName)}さんの担当予定が、この処理期に見つかりません。氏名の表記や処理期の選択をご確認ください。</div>`;
+    return `<div class="wrongrow-card">
+        <div class="wrongrow-title">⚠ 貼り付ける行が違います</div>
+        <div class="wrongrow-compare">
+          <div class="wrongrow-side">
+            <div class="wrongrow-label">変更届の申請者</div>
+            <div class="wrongrow-name">${escapeHtml(result.applicantName)}</div>
+          </div>
+          <div class="wrongrow-ne">≠</div>
+          <div class="wrongrow-side">
+            <div class="wrongrow-label">この行の担当者</div>
+            <div class="wrongrow-name">${escapeHtml(result.currentName)}</div>
+          </div>
+        </div>
+        <div class="wrongrow-note">取り違えを防ぐため、入力欄には何も入れていません。</div>
+        ${guide}
+      </div>`;
   }
   return (
     (result.messages.length ? result.messages.map(changeMessageHtml).join('<br>') + '<br>' : '') +
@@ -3154,14 +3250,14 @@ function openChangeModal(date, level) {
     <div class="modal-backdrop" id="change-modal-backdrop">
       <div class="modal-box">
         <h3>交代を反映</h3>
-        <p class="change-target">
-          <span class="change-target-date">${escapeHtml(date)}（${WEEKDAY_LABEL[record.weekday]}）・${LEVEL_LABEL[level]}</span>
-          <span class="change-target-name">${escapeHtml(currentName || '未定')}</span>
-          <span class="change-target-note">さんの担当を交代します</span>
-        </p>
-        <p class="hint"><strong class="hint-do">変更届は、申請者本人（＝この行の担当者）の行で貼り付けてください。</strong></p>
-        <label>変更届のテキストを貼り付ける（任意）
-          <textarea id="change-text-input" rows="5" placeholder="グループウェア等の申請内容画面をコピーしてここに貼り付けてください"></textarea>
+        <div class="change-target">
+          <div class="change-target-role">この行の担当者　＝　変更届の<strong class="em-red">申請者</strong></div>
+          <div class="change-target-name">${escapeHtml(currentName || '未定')}</div>
+          <div class="change-target-date">${escapeHtml(date)}（${WEEKDAY_LABEL[record.weekday]}）・${LEVEL_LABEL[level]}</div>
+        </div>
+        <p class="change-caution">交代相手（代わりに入る人）の行ではありません。<strong class="em-red">${escapeHtml(currentName || '未定')}さんが申請した変更届</strong>を貼り付けてください。</p>
+        <label><strong class="em-red">${escapeHtml(currentName || '未定')}</strong>さんの変更届を貼り付ける
+          <textarea id="change-text-input" rows="5" placeholder="${escapeHtml(currentName || '')}さんが申請した変更届の画面をコピーして、ここに貼り付けてください"></textarea>
         </label>
         <div class="row-actions" style="margin-bottom:8px">
           <button id="change-text-parse-btn" class="btn-secondary">貼り付けたテキストから読み取る</button>

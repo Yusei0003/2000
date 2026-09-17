@@ -667,18 +667,74 @@ select[multiple] {
   cursor: pointer;
 }
 
-/* 「交代を反映」モーダルの冒頭で、どの日の誰の担当を交代するのかをはっきり示す */
+/* 「交代を反映」モーダルの冒頭で、この行が誰（＝変更届の申請者）なのかをはっきり示す。
+ * 交代相手の行に貼り付けてしまう取り違えを防ぐための表示。 */
 .change-target {
-  margin: 0 0 6px;
-  padding: 10px 12px;
+  margin: 0 0 8px;
+  padding: 12px 14px;
   background: #eef2f7;
+  border: 1px solid var(--border);
   border-radius: 8px;
+  text-align: center;
   line-height: 1.5;
 }
-.change-target-date { display: block; font-size: 12px; color: var(--muted); }
-.change-target-name { font-size: 17px; font-weight: 700; }
-.change-target-note { font-size: 13px; }
-.change-jump-btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
+.change-target-role { font-size: 12px; color: var(--muted); }
+.change-target-name { font-size: 20px; font-weight: 700; margin: 2px 0; }
+.change-target-date { font-size: 13px; color: var(--muted); }
+.change-caution {
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 貼り付ける行を間違えたときに出す案内。誰と誰が食い違っているのかを対比で示す。 */
+.wrongrow-card {
+  border: 2px solid var(--danger);
+  background: var(--error-bg);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--text);
+}
+.wrongrow-title { color: var(--danger); font-weight: 700; font-size: 15px; margin-bottom: 10px; }
+.wrongrow-compare {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px;
+}
+.wrongrow-side { text-align: center; min-width: 120px; }
+.wrongrow-label { font-size: 11px; color: var(--muted); }
+.wrongrow-name { font-size: 16px; font-weight: 700; }
+.wrongrow-ne { font-size: 20px; font-weight: 700; color: var(--danger); }
+.wrongrow-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.wrongrow-guide { margin-top: 10px; background: #fff; border-radius: 8px; padding: 10px; }
+.wrongrow-guide-title { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+.wrongrow-slot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+.wrongrow-slot-date { font-size: 13px; }
+.change-jump-btn { padding: 4px 12px; font-size: 13px; }
+
+/* 変更届による交代の一覧。日付と氏名を列に分けて、どの日の誰とどの日の誰かを読み取りやすくする */
+.changelog-arrow { color: var(--primary); font-weight: 700; text-align: center; font-size: 15px; }
+.changelog-slot { font-size: 11px; color: var(--muted); }
+.changelog-none { color: var(--muted); }
+
+/* 取り違えを防ぐための強調（氏名など、必ず確認してほしい部分） */
+.em-red { color: var(--danger); font-weight: 700; }
 
 /* バックアップ促しポップアップの中で、前回バックアップ日時と未バックアップ件数を示す枠 */
 .backup-state-box {
