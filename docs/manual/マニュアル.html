@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>日直勤務表 自動作成アプリ 操作マニュアル</title>
+<style>
+  /* ---- 印刷（A4縦）の基本設定 ---- */
+  @page { size: A4 portrait; margin: 16mm 15mm 18mm; }
+  @page :first { margin: 0; }
+
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: "IPAPGothic", "IPAGothic", "Noto Sans JP", sans-serif;
+    font-size: 10.5pt; line-height: 1.75; color: #1b2430; margin: 0;
+  }
+
+  /* ---- 表紙 ---- */
+  .cover {
+    height: 297mm; box-sizing: border-box; padding: 55mm 22mm 20mm;
+    background: #1f4e9c; color: #fff; page-break-after: always;
+    display: flex; flex-direction: column;
+  }
+  .cover .eyebrow { font-size: 12pt; letter-spacing: .3em; opacity: .8; }
+  .cover h1 { font-size: 30pt; line-height: 1.35; margin: 10mm 0 0; font-weight: 700; }
+  .cover .sub { font-size: 14pt; margin-top: 8mm; opacity: .92; line-height: 1.8; }
+  .cover .for-box {
+    margin-top: 14mm; padding: 7mm 8mm; border-radius: 3mm;
+    background: rgba(255,255,255,.14); font-size: 11pt; line-height: 1.9;
+  }
+  .cover .for-box strong { display: block; font-size: 12.5pt; margin-bottom: 2mm; }
+  .cover .foot { margin-top: auto; font-size: 10pt; opacity: .8; }
+
+  /* ---- 目次 ---- */
+  .toc { page-break-after: always; }
+  .toc h2 { border: none; margin-top: 0; }
+  .toc ol { list-style: none; padding: 0; margin: 0; counter-reset: none; }
+  .toc > ol > li { margin-bottom: 5mm; }
+  .toc .chap {
+    font-size: 13pt; font-weight: 700; color: #1f4e9c;
+    border-bottom: 2px solid #dbe4f2; padding-bottom: 1.5mm; margin-bottom: 2mm;
+  }
+  .toc ul { list-style: none; padding-left: 5mm; margin: 0; font-size: 10pt; color: #47526a; }
+  .toc ul li { padding: .6mm 0; }
+
+  /* ---- 見出し ---- */
+  h2 {
+    font-size: 17pt; color: #1f4e9c; margin: 0 0 6mm;
+    padding: 0 0 2.5mm; border-bottom: 3px solid #1f4e9c;
+    page-break-after: avoid;
+  }
+  h2 .chapno {
+    display: inline-block; background: #1f4e9c; color: #fff;
+    font-size: 10pt; padding: .8mm 3mm; border-radius: 1.5mm;
+    margin-right: 3mm; vertical-align: .8mm;
+  }
+  h3 {
+    font-size: 12.5pt; margin: 9mm 0 3mm; padding-left: 3mm;
+    border-left: 4px solid #1f4e9c; page-break-after: avoid;
+  }
+  h4 { font-size: 11pt; margin: 6mm 0 2mm; color: #29405f; page-break-after: avoid; }
+  .chapter { page-break-before: always; }
+  p { margin: 0 0 3mm; }
+
+  /* ---- 手順ステップ ---- */
+  .steps { counter-reset: step; list-style: none; padding: 0; margin: 0 0 5mm; }
+  .steps > li {
+    counter-increment: step; position: relative;
+    padding: 0 0 4mm 11mm; margin-bottom: 1mm;
+    page-break-inside: avoid;
+  }
+  .steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: .2mm;
+    width: 7.5mm; height: 7.5mm; line-height: 7.5mm; text-align: center;
+    background: #1f4e9c; color: #fff; border-radius: 50%;
+    font-size: 10pt; font-weight: 700;
+  }
+  .steps > li > .t { font-weight: 700; display: block; margin-bottom: 1mm; }
+  .steps ul { margin: 1.5mm 0 0; padding-left: 5mm; }
+  .steps ul li { margin-bottom: .8mm; }
+
+  /* ---- 図 ---- */
+  figure {
+    margin: 4mm 0 6mm; padding: 0; page-break-inside: avoid;
+  }
+  figure img {
+    width: 100%; display: block;
+    border: 1px solid #ccd5e2; border-radius: 1.5mm;
+  }
+  figure img.narrow { width: 62%; margin: 0 auto; }
+  figure img.narrower { width: 54%; margin: 0 auto; }
+  figcaption {
+    font-size: 9pt; color: #5a6a80; margin-top: 1.5mm; text-align: center;
+  }
+  figcaption b { color: #1f4e9c; }
+
+  /* ---- 囲み ---- */
+  .box { padding: 4mm 5mm; border-radius: 2mm; margin: 4mm 0 5mm; page-break-inside: avoid; }
+  .box .bt { font-weight: 700; display: block; margin-bottom: 1.5mm; }
+  .box p:last-child, .box ul:last-child { margin-bottom: 0; }
+  .box ul { margin: 0; padding-left: 5mm; }
+  .note    { background: #eef4fd; border-left: 4px solid #1f4e9c; }
+  .note .bt { color: #1f4e9c; }
+  .warn    { background: #fdf2f2; border-left: 4px solid #c0392b; }
+  .warn .bt { color: #c0392b; }
+  .tip     { background: #fff8e6; border-left: 4px solid #d19100; }
+  .tip .bt { color: #a87400; }
+
+  /* ---- 表 ---- */
+  table { width: 100%; border-collapse: collapse; margin: 3mm 0 5mm; font-size: 9.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #ccd5e2; padding: 2mm 3mm; text-align: left; vertical-align: top; }
+  th { background: #eef2f8; font-weight: 700; white-space: nowrap; }
+  td.q { width: 38%; }
+
+  /* ---- 流れ図 ---- */
+  .flow { margin: 4mm 0 6mm; page-break-inside: avoid; }
+  .flow .fitem {
+    border: 1.5px solid #1f4e9c; border-radius: 2mm; padding: 2.5mm 4mm;
+    margin-bottom: 1mm; background: #f5f8fd;
+  }
+  .flow .fitem b { color: #1f4e9c; }
+  .flow .farrow { text-align: center; color: #1f4e9c; font-size: 11pt; line-height: 1.1; margin-bottom: 1mm; }
+
+  /* ---- 年間スケジュール（はじめに） ---- */
+  .sched {
+    border: 2.5px solid #1f4e9c; border-radius: 3mm; overflow: hidden;
+    margin: 4mm 0 6mm; page-break-inside: avoid;
+  }
+  .sched .sched-head {
+    background: #1f4e9c; color: #fff; padding: 3mm 5mm;
+    font-size: 12.5pt; font-weight: 700;
+  }
+  .sched .sched-head span { font-size: 9.5pt; font-weight: 400; opacity: .85; margin-left: 3mm; }
+  .sched table { margin: 0; border: none; font-size: 10pt; }
+  .sched th, .sched td { border: none; border-bottom: 1px solid #dbe4f2; padding: 3mm 5mm; }
+  .sched tr:last-child th, .sched tr:last-child td { border-bottom: none; }
+  .sched th {
+    background: #f5f8fd; color: #1f4e9c; width: 26mm; font-size: 11pt;
+    text-align: center; vertical-align: middle;
+  }
+  .sched td .ref { display: block; font-size: 9pt; color: #5a6a80; margin-top: .8mm; }
+
+  code {
+    font-family: "IPAGothic", monospace; background: #eef2f8;
+    padding: .3mm 1.5mm; border-radius: 1mm; font-size: 9.5pt;
+  }
+  .kbd { background: #e9edf4; border: 1px solid #c3cde0; border-radius: 1mm; padding: .3mm 2mm; font-size: 9.5pt; }
+  strong.hl { background: linear-gradient(transparent 60%, #ffe98a 60%); }
+  .em-red { color: #c0392b; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<!-- ======================= 表紙 ======================= -->
+<div class="cover">
+  <div class="eyebrow">操作マニュアル</div>
+  <h1>日直勤務表<br>自動作成アプリ</h1>
+  <div class="sub">
+    バックアップの復元から、勤務表の作成、<br>
+    変更届による交代の反映まで
+  </div>
+  <div class="for-box">
+    <strong>このマニュアルの読み方</strong>
+    はじめてこのアプリを使う方が、上から順に読んで<br>
+    そのとおりに操作すれば1年分の作業ができるように書いています。<br>
+    画面の写真は、架空の職員名簿を使ったものです。
+  </div>
+  <div class="foot">日直勤務表 自動作成アプリ ／ 操作マニュアル 第1版</div>
+</div>
+
+<!-- ======================= 目次 ======================= -->
+<div class="toc">
+  <h2>目次</h2>
+  <ol>
+    <li>
+      <div class="chap">はじめに</div>
+      <ul>
+        <li>このアプリでできること</li>
+        <li><strong>1年間の作業スケジュール</strong></li>
+        <li>画面の全体像（7つのタブ）</li>
+        <li>はじめに覚えておく3つのこと</li>
+      </ul>
+    </li>
+    <li>
+      <div class="chap">第1章　使い始め ― バックアップから復元する</div>
+      <ul>
+        <li>1-1　なぜ最初に「復元」なのか</li>
+        <li>1-2　用意するもの</li>
+        <li>1-3　復元の手順</li>
+        <li>1-4　復元できたか確認する</li>
+        <li>1-5　よくあるつまずき</li>
+      </ul>
+    </li>
+    <li>
+      <div class="chap">第2章　勤務表を作る</div>
+      <ul>
+        <li>2-1　作成の全体の流れ</li>
+        <li>2-2　処理期を選ぶ</li>
+        <li>2-3　名簿を取り込む</li>
+        <li>2-4　ルールを確認する</li>
+        <li>2-5　行事を登録する</li>
+        <li>2-6　日直の対象日を抽出する</li>
+        <li>2-7　勤務表を作成する</li>
+        <li>2-8　結果を確認する</li>
+        <li>2-9　決裁を受けて確定する</li>
+        <li>2-10　バックアップを作る</li>
+        <li>2-11　書き出して配付する</li>
+        <li>2-12　よくあるつまずき</li>
+      </ul>
+    </li>
+    <li>
+      <div class="chap">第3章　変更届による交代を反映する</div>
+      <ul>
+        <li>3-1　変更届が届いたときの流れ</li>
+        <li>3-2　該当の日を探す</li>
+        <li>3-3　「申請者本人」の行で開く（最重要）</li>
+        <li>3-4　変更届を貼り付ける</li>
+        <li>3-5　内容を確認して反映する</li>
+        <li>3-6　行を間違えたときの画面</li>
+        <li>3-7　反映後のお知らせとバックアップ</li>
+        <li>3-8　交代した記録を一覧で確認する</li>
+        <li>3-9　よくあるつまずき</li>
+      </ul>
+    </li>
+    <li>
+      <div class="chap">付録</div>
+      <ul>
+        <li>付録A　用語集</li>
+        <li>付録B　困ったときの調べ方</li>
+      </ul>
+    </li>
+  </ol>
+</div>
+
+<!-- ======================= はじめに ======================= -->
+<div class="chapter">
+<h2>はじめに</h2>
+
+<h3>このアプリでできること</h3>
+<p>
+  土日・祝日・年末年始の日直勤務表を、職員名簿とルールから<strong>自動で作成</strong>するアプリです。
+  これまで手作業で組んでいた「誰と誰を、どの日に」を、120日ルール・同一課の回避・
+  ペアの重複回避・育休や行事による除外などを踏まえて自動で割り当てます。
+</p>
+<p>
+  作成した勤務表は履歴として保存され、変更届による交代もこのアプリの上で反映できます。
+  Webブラウザだけで動き、サーバーは必要ありません。
+</p>
+
+<h3>1年間の作業スケジュール</h3>
+<p>この仕事は、1年に2回の「勤務表づくり」と、随時の「交代の反映」でできています。まず全体をつかんでください。</p>
+
+<div class="sched">
+  <div class="sched-head">1年間にやること<span>― どの章を読めばよいかもここで分かります</span></div>
+  <table>
+    <tr>
+      <th>3月ごろ</th>
+      <td>
+        <strong>前期（4〜9月）の勤務表を作る</strong>
+        処理期を作り、異動後の名簿を取り込んで作成し、決裁を受けて確定します。
+        <span class="ref">→ 第2章「勤務表を作る」</span>
+      </td>
+    </tr>
+    <tr>
+      <th>9月ごろ</th>
+      <td>
+        <strong>後期（10〜翌3月）の勤務表を作る</strong>
+        前期と同じ手順です。
+        <span class="ref">→ 第2章「勤務表を作る」</span>
+      </td>
+    </tr>
+    <tr>
+      <th>随時</th>
+      <td>
+        <strong>変更届が届いたら交代を反映する</strong>
+        確定済みの勤務表に、変更届の内容を反映します。
+        <span class="ref">→ 第3章「変更届による交代を反映する」</span>
+      </td>
+    </tr>
+    <tr>
+      <th>作業の<br>たび</th>
+      <td>
+        <strong>バックアップを作る</strong>
+        勤務表の確定後・交代の反映後は、その場でお知らせが出ます。作ったファイルは別の場所に保存します。
+        <span class="ref">→ 2-10／3-7</span>
+      </td>
+    </tr>
+    <tr>
+      <th>担当が<br>替わるとき</th>
+      <td>
+        <strong>バックアップファイルを引き継ぐ／復元する</strong>
+        新しい担当者は、まず復元から始めます。
+        <span class="ref">→ 第1章「使い始め ― バックアップから復元する」</span>
+      </td>
+    </tr>
+  </table>
+</div>
+
+<div class="warn">
+  <span class="bt">いちばん大事な注意</span>
+  <p>
+    このアプリのデータは<strong class="hl">使っているパソコンのブラウザの中だけ</strong>に保存されています。
+    サーバーには何も送られません。つまり、<strong>ブラウザの履歴・データを消したり、パソコンが替わったりすると、
+    それまでのデータはすべて消えます。</strong>
+  </p>
+  <p style="margin-top:2mm">
+    だからこの手引きは、最初の章を「<strong>バックアップからの復元</strong>」から始めています。
+    作業の区切りごとにバックアップを作る習慣をつけてください。
+  </p>
+</div>
+
+<h3>画面の全体像（7つのタブ）</h3>
+<p>
+  画面の上に処理期（しょりき）の選択欄があり、その下にタブが7つ並びます。
+  作業はふつう、左のタブから右へ順に進みます。
+</p>
+
+<figure>
+  <img src="images/fig1-1.png" alt="アプリの上部。処理期の選択欄と7つのタブ">
+  <figcaption>画面の上部。<b>上段が処理期の選択欄</b>、<b>下段が7つのタブ</b>です。</figcaption>
+</figure>
+
+<table>
+  <tr><th>タブ</th><th>何をするところか</th></tr>
+  <tr><td>名簿管理</td><td>その処理期の職員名簿を取り込む・確認する</td></tr>
+  <tr><td>ルール設定</td><td>120日ルールなどの数値、常時除外する所属、育休・産休等の期間を設定する</td></tr>
+  <tr><td>行事管理</td><td>産業まつり・選挙などの行事と、その前後に外す所属を登録する</td></tr>
+  <tr><td>勤務表作成</td><td>対象日を抽出して勤務表を自動作成し、決裁のうえ確定する</td></tr>
+  <tr><td>履歴・確認</td><td><strong>バックアップ</strong>、確定済み履歴の確認、<strong>交代の反映</strong>、担当実績の確認</td></tr>
+  <tr><td>使い方</td><td>アプリ内の説明。分からないことを言葉で検索もできる</td></tr>
+  <tr><td>仕様書・設計書</td><td>ルールの根拠や内部の仕組みの詳細</td></tr>
+</table>
+
+<h3>はじめに覚えておく3つのこと</h3>
+<div class="note">
+  <span class="bt">1. 「処理期」がすべての単位</span>
+  <p>
+    処理期とは、勤務表を作る半年の区切りのことです（例：2026年度 前期＝4〜9月、後期＝10〜翌3月）。
+    名簿もルールも勤務表も、<strong>いま選んでいる処理期に対して</strong>登録されます。
+    画面の一番上で、いま何の処理期を選んでいるかを必ず確認してから作業してください。
+  </p>
+</div>
+<div class="note">
+  <span class="bt">2. 確定には決裁のチェックが要る</span>
+  <p>
+    勤務表は、作っただけでは履歴に残りません。内容を確認・決裁したうえで
+    「決裁が完了したことを確認しました」にチェックを入れて、はじめて確定できます。
+  </p>
+</div>
+<div class="note">
+  <span class="bt">3. 作業の区切りでバックアップ</span>
+  <p>
+    勤務表を確定したとき、交代を反映したときは、その場で
+    「バックアップを作成してください」というお知らせが自動的に出ます。
+    面倒でも、そこで作ってください。<strong>消えてからでは戻せません。</strong>
+  </p>
+</div>
+</div>
+
+<!-- ======================= 第1章 ======================= -->
+<div class="chapter">
+<h2><span class="chapno">第1章</span>使い始め ― バックアップから復元する</h2>
+
+<h3>1-1　なぜ最初に「復元」なのか</h3>
+<p>
+  このアプリのデータはパソコンのブラウザの中にしかありません。
+  そのため、<strong>担当が替わったとき・パソコンを入れ替えたとき・別のパソコンで作業するとき</strong>は、
+  まず前任者（または前回の自分）が作ったバックアップファイルを読み込むところから始めます。
+</p>
+<p>
+  復元すると、職員名簿・ルール設定・行事・確定済み履歴・育休等の期間まで、すべてが引き継がれます。
+  ゼロから名簿を取り込み直す必要はありません。
+</p>
+
+<div class="tip">
+  <span class="bt">はじめてアプリを使う職場で、バックアップがまだ無い場合</span>
+  <p>
+    この章は飛ばして、第2章「勤務表を作る」から始めてください。
+    そのかわり、第2章の最後に出てくるバックアップの作成は必ず行ってください。
+  </p>
+</div>
+
+<h3>1-2　用意するもの</h3>
+<ul>
+  <li>前任者から引き継いだ<strong>バックアップファイル（拡張子 <code>.json</code>）</strong>。
+      ファイル名は <code>日直勤務表バックアップ_2026-09-17.json</code> のような形です。</li>
+  <li>バックアップは次のフォルダに保存してあります。<br><code>S:\1100-総務課\02-職員係\050_日直\日直システム用\バックアップ</code><br>
+      いちばん新しい日付のファイルを、先に自分のパソコンにコピーしておくと確実です。</li>
+</ul>
+
+<p>復元する前の画面です。名簿はまだ何も入っていません。</p>
+<figure>
+  <img src="images/fig1-2.png" alt="復元前の名簿管理タブ。名簿が取り込まれていない旨の案内が出ている">
+  <figcaption>復元前の「名簿管理」タブ。<b>まだ名簿が取り込まれていない</b>状態です。</figcaption>
+</figure>
+
+<h3>1-3　復元の手順</h3>
+<ol class="steps">
+  <li>
+    <span class="t">「履歴・確認」タブを開く</span>
+    画面上部のタブから「履歴・確認」をクリックします。
+    一番上に「データのバックアップ」という欄があります。
+  </li>
+  <li>
+    <span class="t">「バックアップから復元」をクリックする</span>
+    ファイルを選ぶ画面が開きます。隣の「バックアップを作成する」は<strong>今のデータを書き出す</strong>ボタンなので、
+    押し間違えないよう注意してください。
+  </li>
+  <li>
+    <span class="t">引き継いだ <code>.json</code> ファイルを選ぶ</span>
+  </li>
+  <li>
+    <span class="t">確認のメッセージで「OK」を押す</span>
+    「このバックアップ（作成日時：〇年〇月〇日 〇時〇分）で現在のデータをすべて上書きします。よろしいですか？」
+    と表示されます。<strong>日時が、引き継いだファイルのものと合っているか</strong>を確認してから「OK」を押します。
+  </li>
+  <li>
+    <span class="t">画面が自動で読み込み直されるのを待つ</span>
+    「バックアップを復元しました。画面を再読み込みします。」と表示され、1秒ほどで画面が更新されます。
+  </li>
+</ol>
+
+<figure>
+  <img src="images/fig1-3.png" alt="履歴・確認タブのデータのバックアップ欄">
+  <figcaption>「履歴・確認」タブの一番上。右の<b>「バックアップから復元」</b>を押します。<br>
+  左の「バックアップを作成する」は書き出しのボタンです。</figcaption>
+</figure>
+
+<div class="warn">
+  <span class="bt">復元は「上書き」です</span>
+  <p>
+    復元すると、いまこのパソコンに入っているデータは<strong>すべて消えて</strong>、
+    バックアップの内容に置き換わります。すでに作業を始めていた場合は、
+    先に「バックアップを作成する」で今の状態を書き出してから復元してください。
+  </p>
+</div>
+
+<h3>1-4　復元できたか確認する</h3>
+<p>
+  「名簿管理」タブを開いて、職員名簿が表示されていれば成功です。
+  人数（例：<strong>150名（係長級 120 / 主事級 30）</strong>）が引き継ぎの内容と合っているか確認してください。
+</p>
+<figure>
+  <img src="images/fig1-4.png" alt="復元後の名簿管理タブ。150名の名簿が表示されている">
+  <figcaption>復元後の「名簿管理」タブ。<b>人数と対象者リストが表示されていれば成功</b>です。</figcaption>
+</figure>
+<p>あわせて、次の点も確認しておくと安心です。</p>
+<ul>
+  <li>画面上部の処理期の選択欄に、引き継いだ処理期（例：2026年度 前期）が出ているか</li>
+  <li>「履歴・確認」タブの「確定済み履歴」に、これまでの勤務表が入っているか</li>
+</ul>
+
+<h3>1-5　よくあるつまずき</h3>
+<table>
+  <tr><th>症状</th><th>対処</th></tr>
+  <tr>
+    <td class="q">「バックアップファイルの読み込みに失敗しました」と出る</td>
+    <td>ファイルが壊れているか、<code>.json</code> 以外のファイルを選んでいます。
+        引き継ぎ元にもう一度ファイルをもらってください。</td>
+  </tr>
+  <tr>
+    <td class="q">「バックアップファイルの内容が正しくありません」と出る</td>
+    <td>このアプリのバックアップではないファイルです。ファイル名と中身を確認してください。</td>
+  </tr>
+  <tr>
+    <td class="q">復元したのに名簿が空のまま</td>
+    <td>画面上部の処理期が、名簿の入っていない別の処理期になっている可能性があります。
+        処理期を切り替えて確認してください。</td>
+  </tr>
+  <tr>
+    <td class="q">確認のメッセージに出る日時が古い</td>
+    <td>古いバックアップを選んでいます。「キャンセル」を押して、最新のファイルを選び直してください。</td>
+  </tr>
+</table>
+</div>
+
+<!-- ======================= 第2章 ======================= -->
+<div class="chapter">
+<h2><span class="chapno">第2章</span>勤務表を作る</h2>
+
+<h3>2-1　作成の全体の流れ</h3>
+<p>半年に1回、次の順番で進めます。慣れれば30分ほどの作業です。</p>
+
+<div class="flow">
+  <div class="fitem"><b>① 処理期を選ぶ</b>　― これから作る半年（例：2026年度 前期）を選ぶ</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>② 名簿を取り込む</b>　― 人事異動を反映した最新のExcel名簿を取り込む</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>③ ルールを確認する</b>　― 120日ルール、常時除外する所属、育休・産休等の期間</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>④ 行事を登録する</b>　― 産業まつり・選挙など、前後に外す所属がある行事</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>⑤ 対象日を抽出する</b>　― 土日・祝日・年末年始を自動で拾い出す</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>⑥ 勤務表を作成する</b>　― ボタン1つで自動割当</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>⑦ 結果を確認する</b>　― 「要確認」「エラー」の日、未割当の職員をチェック</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>⑧ 決裁を受けて確定する</b>　― チェックを入れて履歴に保存</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>⑨ バックアップを作る</b>　― 自動で出るポップアップからその場で</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>⑩ 書き出して配付する</b>　― PDF／CSVで出力</div>
+</div>
+
+<h3>2-2　処理期を選ぶ</h3>
+<p>
+  画面上部の「処理期」の欄で、これから作る半年を選びます。
+  右側に期間（例：2026-04-01 〜 2026-09-30）が表示されるので、合っているか確認してください。
+</p>
+<figure>
+  <img src="images/fig2-1.png" alt="画面上部の処理期の選択欄">
+  <figcaption>いま選んでいる処理期と、その期間が表示されます。</figcaption>
+</figure>
+<ul>
+  <li>新しい半年を始めるときは<strong>「処理期を追加」</strong>で作ります。</li>
+  <li>新しく作った処理期には、直前の処理期の「常時除外する所属」が自動で引き継がれます。
+      引き継ぎ直したいときは「前回処理期からコピー」を押します。</li>
+</ul>
+
+<h3>2-3　名簿を取り込む</h3>
+<p>
+  <strong>名簿は処理期ごとに管理します。</strong>新しい処理期を作ったら、
+  人事異動を反映した最新のExcel名簿をその都度取り込んでください。
+</p>
+<ol class="steps">
+  <li>
+    <span class="t">人事給与システムから名簿を出力する</span>
+    「在職・写真無・詳細」の条件で検索し、<span class="kbd">Ctrl</span>＋<span class="kbd">A</span> で全選択して
+    Excelに貼り付け、<code>.xlsx</code> で保存します。
+  </li>
+  <li>
+    <span class="t">「名簿管理」タブの「1. Excel名簿データの取り込み」でファイルを選ぶ</span>
+  </li>
+  <li>
+    <span class="t">内容を確認して取り込む</span>
+    級（係長級／主事級）は<strong>ランク</strong>から自動判定されます。
+    判定できない職名があったときだけ、「係長級／主事級／取り込まない」を選ぶ画面が出ます。
+  </li>
+</ol>
+<figure>
+  <img src="images/fig2-2.png" alt="名簿管理タブのExcel名簿データの取り込み欄">
+  <figcaption>「名簿管理」タブの上部。ここにExcelファイルを指定します。</figcaption>
+</figure>
+<div class="warn">
+  <span class="bt">取り込むと、その処理期の名簿は入れ替わります</span>
+  <p>
+    取り込みは追加ではなく<strong>置き換え</strong>です。手で追加した職員も消えます。
+    ただし「市民課経験」「派遣（除外）」「7割措置（除外）」「選挙管理委員会（併任）」のチェックは、
+    前の処理期から職員番号ごとに自動で引き継がれます。異動があった人は取込後に確認してください。
+  </p>
+</div>
+
+<h3>2-4　ルールを確認する</h3>
+<p>
+  「ルール設定」タブで、割当に使う数値と除外の設定を確認します。
+  通常は初期値のままで問題ありません。<strong>毎回必ず見るのは、育休・産休・病気休暇の期間です。</strong>
+</p>
+<figure>
+  <img src="images/fig2-3.png" alt="ルール設定タブの基本設定">
+  <figcaption>「ルール設定」タブの基本設定。最低間隔日数などを確認します。</figcaption>
+</figure>
+<table>
+  <tr><th>項目</th><th>初期値</th><th>意味</th></tr>
+  <tr><td>最低間隔日数</td><td>120日</td><td>前回の日直から何日以上あけるか</td></tr>
+  <tr><td>新規採用職員の除外期間</td><td>6ヶ月</td><td>採用から何ヶ月間は割り当てないか</td></tr>
+  <tr><td>年末年始・GWの遡り回数</td><td>2回</td><td>直近何回分と同じ人を避けるか</td></tr>
+  <tr><td>ペア重複の遡り年度数</td><td>2年度</td><td>何年度前までのペアを避けるか</td></tr>
+  <tr><td>退職予定日の何ヶ月前まで</td><td>1ヶ月</td><td>退職の何ヶ月前から対象外にするか</td></tr>
+</table>
+<p>そのほか、次の欄も確認してください。</p>
+<ul>
+  <li><strong>常時除外する所属</strong>：外局など、日直に入らない所属をチェックします。</li>
+  <li><strong>育休・産休・病気休暇による除外期間</strong>：システムから出力した一覧をそのまま取り込めます。
+      病気休暇や個人的な事情で日直ができない職員も、ここに個別登録できます
+      （終了日が未定なら空欄のままで構いません）。</li>
+</ul>
+
+<h3>2-5　行事を登録する</h3>
+<p>
+  産業まつり・花火大会・選挙などの行事を年度ごとに登録します。
+  行事の日の前後（既定で30日前〜10日後）は、担当する所属の職員が日直の対象から外れます。
+</p>
+<figure>
+  <img src="images/fig2-4.png" alt="行事管理タブの行事一覧">
+  <figcaption>「行事管理」タブの行事一覧。日付・除外する所属・前後の日数を登録します。</figcaption>
+</figure>
+<div class="tip">
+  <span class="bt">去年と同じ行事は、コピーして日付だけ直せます</span>
+  <p>「前年度の行事をコピー」を使うと、去年登録した行事がそのまま複製されるので、今年の日付に直すだけで済みます。</p>
+</div>
+
+<h3>2-6　日直の対象日を抽出する</h3>
+<p>
+  「勤務表作成」タブを開きます。対象期間は選んでいる処理期から自動で入っています。
+  <strong>「土日・祝日・年末年始を自動抽出」</strong>を押すと、日直が必要な日が一覧で出ます。
+</p>
+<figure>
+  <img src="images/fig2-5.png" alt="抽出された対象日の一覧">
+  <figcaption>抽出された対象日。<b>対象から外したい日はチェックを外します。</b></figcaption>
+</figure>
+
+<h3>2-7　勤務表を作成する</h3>
+<p>
+  <strong>「勤務表を作成する」</strong>を押すだけです。数秒で全日程の割当が終わります。
+  これまでの履歴（前回の勤務日、120日ルール、ペアの重複、資格要件など）を踏まえて自動で決まり、
+  そのあと全体を見渡して、より良い組合せへの入れ替えも自動で行われます。
+</p>
+<figure>
+  <img src="images/fig2-6.png" alt="作成された勤務表の結果一覧">
+  <figcaption>作成結果。日ごとに1人目・2人目が割り当てられ、右端に状態が出ます。</figcaption>
+</figure>
+<ul>
+  <li>名前の札は<strong>ドラッグして、別の日・別の欄の職員と入れ替え</strong>られます。</li>
+  <li>プルダウンから直接選び直すこともできます。</li>
+  <li>入れ替えると、係長級が入っているか・同性か・同一課でないかなどが自動で再判定されます。</li>
+</ul>
+
+<h3>2-8　結果を確認する</h3>
+<p>結果一覧の右端の「状態」欄を、上から順に見ていきます。</p>
+<table>
+  <tr><th>表示</th><th>意味</th><th>すること</th></tr>
+  <tr><td>OK</td><td>すべてのルールを満たしています</td><td>そのままで構いません</td></tr>
+  <tr><td>要確認</td><td>候補者が足りず、ルールを緩めて割り当てた日です</td><td>理由を読み、必要なら手で入れ替えます</td></tr>
+  <tr><td><span class="em-red">エラー</span></td><td>2名の枠を埋められなかった日です（1名のみ、または0名）</td><td><strong>必ず手当てが必要です</strong></td></tr>
+</table>
+<p>
+  一覧の下には、<strong>今期まだ一度も割り当てられていない職員</strong>とその理由が表示されます。
+  偏りがないか、外れている理由に思い当たらないものがないかを確認してください。
+</p>
+<figure>
+  <img src="images/fig2-7.png" alt="今期まだ割り当てられていない対象職員の一覧">
+  <figcaption>未割当の職員と、その理由。<b>確定する前にここを確認します。</b></figcaption>
+</figure>
+
+<h3>2-9　決裁を受けて確定する</h3>
+<p>
+  内容を印刷するなどして決裁を受けます。決裁が済んだら、
+  <strong>「決裁が完了したことを確認しました」にチェック</strong>を入れ、
+  <strong>「この内容で確定・履歴に保存」</strong>を押します。
+</p>
+<figure>
+  <img src="images/fig2-8.png" alt="決裁の注意書きとチェックボックス、確定ボタン">
+  <figcaption>チェックを入れるまで、確定のボタンは押せません。</figcaption>
+</figure>
+<div class="note">
+  <span class="bt">確定したあとに直したくなったら</span>
+  <p>
+    「引き戻して修正」を押すとロックが外れ、やり直せます。
+    その回の確定分は確定済み履歴から削除されますが、引き戻す前の内容は「作成履歴」として残ります。
+    修正後は、もう一度決裁のチェックを入れて確定してください。
+  </p>
+</div>
+<figure>
+  <img src="images/fig2-10.png" alt="確定済みであることを知らせるバナー">
+  <figcaption>確定すると、この表示に変わります。自動処理で内容が変わることはありません。</figcaption>
+</figure>
+
+<h3>2-10　バックアップを作る</h3>
+<p>
+  確定すると、すぐに次のポップアップが出ます。<strong>ここで必ず「バックアップを作成する」を押してください。</strong>
+  ファイルがダウンロードされるので、次のフォルダに移して保存します（このパソコンの中だけに置かない）。<br>
+  <code>S:\1100-総務課\02-職員係\050_日直\日直システム用\バックアップ</code>
+</p>
+<figure>
+  <img src="images/fig2-9.png" alt="勤務表確定後に表示されるバックアップ作成のポップアップ" class="narrow">
+  <figcaption>確定の直後に自動で出るお知らせ。<b>その場で作るのが確実です。</b></figcaption>
+</figure>
+
+<h3>2-11　書き出して配付する</h3>
+<p>勤務表作成タブの下にあるボタンで書き出せます。</p>
+<ul>
+  <li><strong>PDFで書き出す</strong>：そのまま配付・掲示できる形です。</li>
+  <li><strong>CSVで書き出す</strong>：Excelで加工したいときに使います。</li>
+</ul>
+<p>
+  確定済みの勤務表は「履歴・確認」タブからも書き出せます。
+  次の担当者へ引き継ぐときは「引継ぎ用に書き出す」を使ってください。
+</p>
+
+<h3>2-12　よくあるつまずき</h3>
+<table>
+  <tr><th>症状</th><th>対処</th></tr>
+  <tr>
+    <td class="q">「要確認」や「エラー」の日が多い</td>
+    <td>対象になる職員が足りていません。育休・病休の登録が多すぎないか、
+        常時除外の所属を広く取りすぎていないか、名簿の取込漏れがないかを確認してください。</td>
+  </tr>
+  <tr>
+    <td class="q">特定の職員がまったく割り当てられない</td>
+    <td>結果一覧の下の未割当一覧に理由が出ています。育休期間・所属の除外ルール・
+        新規採用の除外期間・120日ルールのいずれかに該当していないか確認してください。</td>
+  </tr>
+  <tr>
+    <td class="q">「確定」のボタンが押せない</td>
+    <td>決裁のチェックが入っていません。また、割当を変更するとチェックは自動的に外れます。</td>
+  </tr>
+  <tr>
+    <td class="q">性別が「未設定」の職員がいて割り当てられない</td>
+    <td>性別はExcel取込のときだけ自動設定されます（1＝男性、0＝女性）。
+        元のExcelに性別の列が入っているか確認してください。</td>
+  </tr>
+</table>
+</div>
+
+<!-- ======================= 第3章 ======================= -->
+<div class="chapter">
+<h2><span class="chapno">第3章</span>変更届による交代を反映する</h2>
+
+<h3>3-1　変更届が届いたときの流れ</h3>
+<p>
+  日直を交代したいという変更届が回ってきたら、確定済みの勤務表にその交代を反映します。
+  グループウェア等の申請内容の画面を<strong>コピーして貼り付けるだけ</strong>で、氏名と日付を読み取ってくれます。
+</p>
+
+<div class="flow">
+  <div class="fitem"><b>① 「履歴・確認」タブで、変更届の申請者が担当している日を探す</b></div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>② 申請者本人の名前の下にある「交代を反映」を押す</b>（ここを間違えやすい）</div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>③ 変更届の画面をコピーして貼り付け、「貼り付けたテキストから読み取る」を押す</b></div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>④ 表示された確認カードの内容を見て「反映する」を押す</b></div>
+  <div class="farrow">▼</div>
+  <div class="fitem"><b>⑤ お知らせが出たら内容を確認し、バックアップを作る</b></div>
+</div>
+
+<h3>3-2　該当の日を探す</h3>
+<p>
+  「履歴・確認」タブの「確定済み履歴」から、変更届の<strong>申請者</strong>が担当している日を探します。
+  日付が分かっているときは、その行を目で追ってください。
+</p>
+<figure>
+  <img src="images/fig3-1.png" alt="確定済み履歴の一覧。各職員名の下に交代を反映ボタンがある">
+  <figcaption>確定済み履歴。1人目・2人目それぞれの名前の下に<b>「交代を反映」</b>ボタンがあります。</figcaption>
+</figure>
+
+<h3>3-3　「申請者本人」の行で開く（最重要）</h3>
+<div class="warn">
+  <span class="bt">ここが、いちばん間違えやすいところです</span>
+  <p>
+    押すのは<strong class="hl">変更届を出した人（申請者）の行</strong>の「交代を反映」です。
+    <strong>交代相手（代わりに入る人）の行ではありません。</strong>
+  </p>
+  <p style="margin-top:2mm">
+    例：和田さんが「7/11担当の佐藤さんと代わってほしい」と申請した場合<br>
+    → 押すのは<strong>和田さんが担当している日（7/10）の、和田さんの欄</strong>のボタンです。
+  </p>
+</div>
+<p>
+  ボタンを押すと、次の画面が開きます。一番上に
+  <strong>「この行の担当者 ＝ 変更届の<span class="em-red">申請者</span>」</strong>として、
+  氏名と日付が大きく表示されます。<strong>ここに出ている名前が、変更届の申請者と同じか</strong>を必ず見てください。
+</p>
+<figure>
+  <img src="images/fig3-2.png" alt="交代を反映の画面。貼り付ける前の状態" class="narrow">
+  <figcaption>貼り付ける前の画面。上の欄の氏名が<b>変更届の申請者と一致していること</b>を確認します。</figcaption>
+</figure>
+
+<h3>3-4　変更届を貼り付ける</h3>
+<ol class="steps">
+  <li>
+    <span class="t">グループウェア等で変更届の申請内容の画面を開き、全選択してコピーする</span>
+    画面をクリックしてから <span class="kbd">Ctrl</span>＋<span class="kbd">A</span>（全選択）→
+    <span class="kbd">Ctrl</span>＋<span class="kbd">C</span>（コピー）と押します。
+    必要なところだけを選ぶ必要はありません。<strong>画面全体をそのままコピーして構いません。</strong>
+    余計な行が混ざっていても、必要な項目だけを読み取ります。
+  </li>
+  <li>
+    <span class="t">「〇〇さんの変更届を貼り付ける」の枠に貼り付ける</span>
+    <span class="kbd">Ctrl</span>＋<span class="kbd">V</span> で貼り付けます。
+  </li>
+  <li>
+    <span class="t">「貼り付けたテキストから読み取る」を押す</span>
+  </li>
+</ol>
+<p>読み取れるのは、次のような形式です。</p>
+<table>
+  <tr><th>項目</th><th>例</th><th>何として使われるか</th></tr>
+  <tr><td>交代相手氏名</td><td>池田　裕也</td><td>代わりに入る人</td></tr>
+  <tr><td>申請者</td><td>三浦　慎吾</td><td>この行の担当者と一致するか照合する</td></tr>
+  <tr><td>申請日</td><td>2026年06月20日（土）16:52</td><td>申請日時として記録する</td></tr>
+  <tr><td>変更する日付</td><td>2026年07月05日（日）</td><td><strong>交代相手が担当している日</strong>として扱う</td></tr>
+</table>
+
+<h3>3-5　内容を確認して反映する</h3>
+<p>
+  読み取りに成功すると、<strong>「日付・氏名　←→　日付・氏名」のカード</strong>が表示されます。
+  これが、実際に行われる交代の内容です。
+</p>
+<figure>
+  <img src="images/fig3-3.png" alt="読み取り後の画面。交代内容のカードが表示されている" class="narrower">
+  <figcaption>読み取り後の画面。<b>この2日の担当を入れ替えます</b>と示されます。</figcaption>
+</figure>
+<p>
+  カードの<strong>日付と氏名が変更届のとおりであることを確認</strong>したら、
+  一番下の<strong>「反映する」</strong>を押します。これで確定済みの勤務表が書き換わります。
+</p>
+<div class="note">
+  <span class="bt">交代相手の担当日が見つからないとき</span>
+  <p>
+    「変更する日付」に書かれた日に交代相手の担当予定が見つからない場合は、赤字で警告が出ます。
+    多くは変更届の記入ミスなので、まず申請内容を確認してください。
+    そのまま「反映する」を押すと、<strong>片道の交代（申請者の欄を交代相手に置き換えるだけ）でよいか</strong>を
+    もう一度確認するメッセージが出ます。
+  </p>
+</div>
+<div class="tip">
+  <span class="bt">読み取れない項目があったときは</span>
+  <p>
+    「手動で入力・修正する」を押すと、氏名・日付を自分で選べる欄が開きます
+    （読み取れなかった項目があるときは自動的に開きます）。
+    申請内容のスクリーンショット画像から読み取ることもできます。
+  </p>
+</div>
+
+<h3>3-6　行を間違えたときの画面</h3>
+<p>
+  交代相手の行など、<strong>申請者ではない人の行</strong>に貼り付けてしまった場合は、
+  赤い枠で次のように表示され、<strong>入力欄には何も入りません</strong>（取り違えを防ぐためです）。
+</p>
+<figure>
+  <img src="images/fig3-4.png" alt="貼り付ける行が違いますというエラー画面" class="narrower">
+  <figcaption>「変更届の申請者」と「この行の担当者」が<b>≠</b>で並べて表示されます。</figcaption>
+</figure>
+<p>
+  下に<strong>「〇〇さんの担当日はこちらです」</strong>として正しい行が示されるので、
+  <strong>「この行に切り替える」</strong>を押してください。
+  貼り付けたテキストもそのまま持ち越されて、正しい行で読み取り直されます。
+</p>
+
+<h3>3-7　反映後のお知らせとバックアップ</h3>
+<p>
+  「反映する」を押した直後、変更後の組合せがルールに反していないかが自動で判定されます。
+  次のいずれかに当てはまると、ポップアップでお知らせが出ます。
+</p>
+<ul>
+  <li>同じ課どうしの組合せになった</li>
+  <li>性別が一致しなくなった</li>
+  <li>課長補佐・副主幹どうしの組合せになった</li>
+  <li>その処理期の担当回数の目安を超えた</li>
+  <li>最低間隔日数（既定120日）を下回った</li>
+</ul>
+<div class="note">
+  <span class="bt">お知らせが出ても、反映そのものは取り消されません</span>
+  <p>
+    内容を確認したうえで、問題があれば手で調整してください。
+    変更届どおりであれば、そのままで構いません。
+  </p>
+</div>
+<p>続けて、バックアップのお知らせが出ます。<strong>ここでも必ず作成し、2-10と同じフォルダ（<code>S:\1100-総務課\02-職員係\050_日直\日直システム用\バックアップ</code>）に保存してください。</strong></p>
+<figure>
+  <img src="images/fig3-6.png" alt="交代の反映後に表示されるバックアップ作成のポップアップ" class="narrow">
+  <figcaption>交代を反映した直後にも、バックアップのお知らせが出ます。</figcaption>
+</figure>
+<div class="tip">
+  <span class="bt">変更届が何件もあるときは、まとめて最後に作って構いません</span>
+  <p>
+    このお知らせは、交代を1件反映するたびに出ます。
+    何件もまとめて処理するときは、<strong>途中は「あとで」を押して先に進み、
+    全部の反映が終わってから1回だけバックアップを作れば大丈夫です。</strong>
+  </p>
+  <p style="margin-top:2mm">
+    その場合は、<strong class="hl">最後の1件が終わったら忘れずに作ってください。</strong>
+    「履歴・確認」タブの「データのバックアップ」欄に
+    <span class="em-red">それ以降の変更 〇件（未バックアップ）</span>と赤字で件数が出ます。
+    作り忘れていないかは、いつでもそこで確認できます。
+  </p>
+</div>
+
+<h3>3-8　交代した記録を一覧で確認する</h3>
+<p>
+  反映した交代は、確定済み履歴の該当の日に<strong>変更日時</strong>が入り、
+  入れ替えた2日には<strong>同じ色の丸印</strong>が付きます。
+</p>
+<figure>
+  <img src="images/fig3-5.png" alt="反映後の確定済み履歴。変更日時と丸印が入っている">
+  <figcaption>反映後の確定済み履歴。<b>変更日時</b>が記録されます。</figcaption>
+</figure>
+<p>
+  さらに、確定済み履歴の下の<strong>「変更届による交代の一覧」</strong>で、
+  「何日の誰」と「何日の誰」を入れ替えたかを新しい順に確認できます。
+</p>
+<figure>
+  <img src="images/fig3-7.png" alt="変更届による交代の一覧">
+  <figcaption>交代の一覧。<b>日付と氏名が左右に並ぶ</b>ので、一目で分かります。</figcaption>
+</figure>
+<ul>
+  <li>2人が互いの担当日を入れ替えた場合は、<strong>1行にまとめて「←→」</strong>で表示されます。</li>
+  <li>片道の交代は「→」で表示され、入れ替え先の日付欄が「―」になります。</li>
+  <li>表示範囲は、上の「確定済み履歴」の表示フィルタと連動します。</li>
+</ul>
+
+<h3>3-9　よくあるつまずき</h3>
+<table>
+  <tr><th>症状</th><th>対処</th></tr>
+  <tr>
+    <td class="q">「貼り付ける行が違います」と出る</td>
+    <td>交代相手の行に貼り付けています。赤い枠の中の「この行に切り替える」を押してください。</td>
+  </tr>
+  <tr>
+    <td class="q">交代相手の担当日が見つからないと赤字で出る</td>
+    <td>変更届の「変更する日付」が、交代相手の担当日になっていない可能性が高いです。
+        まず申請内容を確認してください。片道の交代でよければ、そのまま反映できます。</td>
+  </tr>
+  <tr>
+    <td class="q">氏名が読み取れない</td>
+    <td>名簿の表記とコピーした文字が違う（スペースの種類など）ことがあります。
+        「手動で入力・修正する」から選び直してください。</td>
+  </tr>
+  <tr>
+    <td class="q">画像からの読み取りが使えない</td>
+    <td>スクリーンショットの読み取りは、アプリをサーバー経由で開いている場合のみ使えます。
+        テキストの貼り付けと手入力は、どちらの開き方でも使えます。</td>
+  </tr>
+  <tr>
+    <td class="q">間違えて反映してしまった</td>
+    <td>もう一度「交代を反映」から、手動で元の職員に戻してください。
+        直前のバックアップから復元し直す方法もあります。</td>
+  </tr>
+</table>
+</div>
+
+<!-- ======================= 付録 ======================= -->
+<div class="chapter">
+<h2>付録</h2>
+
+<h3>付録A　用語集</h3>
+<table>
+  <tr><th>用語</th><th>意味</th></tr>
+  <tr><td>処理期（しょりき）</td><td>勤務表を作る半年の区切り。前期＝4〜9月、後期＝10〜翌3月。
+      名簿・ルール・勤務表はすべてこの単位で管理されます。</td></tr>
+  <tr><td>係長級／主事級</td><td>職員の級。1日2名のうち<strong>少なくとも1名が係長級</strong>である必要があります。
+      名簿取込時にランクから自動判定されます。</td></tr>
+  <tr><td>1人目／2人目</td><td>その日の日直2名。1人目は必ず係長級、2人目はどちらの級でも構いません。</td></tr>
+  <tr><td>指定日</td><td>日直が必要な日。土日・祝日・年末年始（12/29〜1/3）が自動で抽出されます。</td></tr>
+  <tr><td>120日ルール</td><td>前回の日直から最低120日（変更可）あけるルール。</td></tr>
+  <tr><td>要確認</td><td>候補者が足りず、ルールを緩めて割り当てた日。手での見直しが必要です。</td></tr>
+  <tr><td>エラー</td><td>2名の枠を埋められなかった日。必ず手当てが必要です。</td></tr>
+  <tr><td>常時除外する所属</td><td>外局など、日直の対象にしない所属。秘書係と運転手は自動で除外されます。</td></tr>
+  <tr><td>性別ゾーン</td><td>日直のペアは同性で組みます。まず女性を優先して割り当て、
+      割り当てられる女性がいなくなった日から男性に切り替わり、以後その処理期では女性を割り当てません。</td></tr>
+  <tr><td>確定</td><td>作成した勤務表を履歴に保存すること。決裁のチェックが必要です。</td></tr>
+  <tr><td>引き戻し</td><td>確定した勤務表を、修正できる状態に戻すこと。</td></tr>
+</table>
+
+<h3>付録B　困ったときの調べ方</h3>
+<ol class="steps">
+  <li>
+    <span class="t">「使い方」タブを開く</span>
+    このアプリの操作説明がまとまっています。分からないことを言葉で入力して検索することもできます。
+  </li>
+  <li>
+    <span class="t">「仕様書・設計書」タブを開く</span>
+    「なぜこの人が選ばれたのか」「このルールの根拠は何か」まで詳しく書かれています。
+  </li>
+  <li>
+    <span class="t">画面のヒント文を読む</span>
+    各タブの説明文のうち、<strong>黒い太字の部分が「あなたがすること」</strong>です。
+  </li>
+</ol>
+
+<div class="warn">
+  <span class="bt">最後にもう一度</span>
+  <p>
+    データはこのパソコンのブラウザの中だけにあります。
+    <strong class="hl">作業の区切りごとに、必ずバックアップを作って別の場所に保存してください。</strong>
+  </p>
+</div>
+</div>
+
+</body>
+</html>

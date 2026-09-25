@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>日直勤務表 自動作成アプリ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+  <h1>日直勤務表 自動作成アプリ</h1>
+  <p class="subtitle">職員名簿・ルールから日直勤務表（土日祝日・年末年始の当番表）を自動作成します。データはブラウザのlocalStorageに保存されます（サーバー不要）。</p>
+</header>
+
+<div class="period-bar">
+  <div class="period-bar-inner">
+    <label class="period-select-label">処理期
+      <select id="period-select"></select>
+    </label>
+    <span id="period-range" class="muted"></span>
+    <div class="row-actions">
+      <button id="period-add-btn" class="btn-secondary">処理期を追加</button>
+      <button id="period-copy-btn" class="btn-secondary">前回処理期からコピー</button>
+      <button id="period-delete-btn" class="btn-danger">この処理期を削除</button>
+    </div>
+  </div>
+  <div id="period-add-box" class="period-add-box hidden">
+    <div class="grid-form">
+      <label>年度<input type="number" id="period-new-year" min="2000" max="2100" step="1"></label>
+      <label>区分
+        <select id="period-new-half">
+          <option value="H1">前期（4〜9月）</option>
+          <option value="H2">後期（10〜翌3月）</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint">作成すると、直前の処理期の「常時除外する所属」を自動的に引き継ぎます。名簿は処理期ごとに取り込む必要があります（この処理期でExcel名簿を取り込むと、前回処理期に登録されていた「市民課経験」「派遣」「7割措置」が該当する職員に自動的に引き継がれます）。過去の年度も入力できます（例：日直割のみをExcelで取り込む場合）。</p>
+    <div class="row-actions">
+      <button id="period-create" class="btn-primary">この処理期を作成する</button>
+      <button id="period-add-cancel" class="btn-secondary">閉じる</button>
+    </div>
+  </div>
+</div>
+<div id="past-period-banner" class="hint past-period-banner hidden">過去の処理期を選択しています。名簿登録・ルール設定・勤務表作成は不要です。<strong>履歴・確認</strong>タブの「Excel勤務実績データの取り込み」で日直割のみ登録できます。</div>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="staff">名簿管理</button>
+  <button class="tab-btn" data-tab="rules">ルール設定</button>
+  <button class="tab-btn" data-tab="events">行事管理</button>
+  <button class="tab-btn" data-tab="generate">勤務表作成</button>
+  <button class="tab-btn" data-tab="history">履歴・確認</button>
+  <button class="tab-btn" data-tab="help">使い方</button>
+  <button class="tab-btn" data-tab="docs">仕様書・設計書</button>
+</nav>
+
+<main>
+  <!-- ============ 名簿管理 ============ -->
+  <section id="panel-staff" class="tab-panel active">
+    <div class="card" id="staff-xlsx-box">
+      <h2>1. Excel名簿データの取り込み</h2>
+      <p class="hint"><strong class="hint-do">最初にこの取り込みを行ってください。</strong>人事給与システム等から出力した名簿（番号・氏名・職名・所属名・性別・係名・兼職・区分名・ランク・採用日等の列を含む .xlsx）をそのまま取り込めます。級は原則<strong>ランク</strong>から自動判定します（1〜399：課長級以上は除外／400〜600：係長級／601〜999：主事級／1000以降：会計年度任用職員等は除外）。性別は<strong>1＝男性、0＝女性</strong>として自動判定します。区分名が「会計年度任用職員」「派遣」の職員、退職者・非在職者も自動的に取込対象から除外されます。<strong class="hint-do">ランクが読み取れない行のみ、職名ごとの取り込み方法を指定してください</strong>（内容は次回の取り込み時にも記憶されます）。</p>
+      <p class="hint"><strong>名簿は処理期ごとに取り込みます。</strong>取り込むと、選択中の処理期の名簿は今回の内容にすべて置き換わります（この処理期でCSV取込した職員も置き換え対象です）。前回処理期に登録されていた同じ職員番号の「市民課経験」「派遣（除外）」「7割措置（除外）」は自動的に引き継がれます。現在の所属が市民課の職員は「市民課経験」が自動的にチェックされます。</p>
+      <p class="hint"><strong class="hint-do">出力方法：人事給与システムで「在職・写真無・詳細」の条件で検索し、結果を Ctrl+A で全選択して任意のExcelファイルに貼り付ける。そのExcelファイルをここで取り込む。</strong></p>
+      <input type="file" id="staff-xlsx-input" accept=".xlsx">
+      <div id="staff-xlsx-summary" class="hint"></div>
+      <p id="staff-xlsx-no-mapping-note" class="hint hidden">すべての職員がランクから自動判定できました。職名の指定は不要です。</p>
+      <div id="staff-xlsx-mapping-box" class="hidden">
+        <div class="table-wrap small-table">
+          <table>
+            <thead><tr><th>職名（ランク判定不可分のみ）</th><th>人数</th><th>取り込み方法</th></tr></thead>
+            <tbody id="staff-xlsx-mapping-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="row-actions" style="margin-top:12px">
+        <button id="staff-xlsx-confirm" class="btn-primary" disabled>この内容で取り込む</button>
+        <button id="staff-xlsx-cancel" class="btn-secondary">選択を取り消す</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>2. 職員名簿</h2>
+        <div class="row-actions">
+          <span id="staff-count" class="muted"></span>
+          <button id="staff-import-btn" class="btn-secondary">CSV取込</button>
+          <button id="staff-export-btn" class="btn-secondary">CSV書出</button>
+          <button id="staff-import-excluded-export-btn" class="btn-secondary">Excel取込で除外された人をCSV書出</button>
+          <button id="staff-excluded-list-export-btn" class="btn-secondary">除外リストの人をCSV書出</button>
+          <button id="staff-clear-btn" class="btn-danger hidden">この処理期の名簿を削除</button>
+        </div>
+      </div>
+      <div id="staff-import-box" class="hidden">
+        <p class="hint">ヘッダー行付きCSV：番号,氏名,級(係長級/主事級),所属課,市民課経験(TRUE/FALSE),採用年月日(YYYY-MM-DD)</p>
+        <textarea id="staff-import-text" rows="6" placeholder="番号,氏名,級,所属課,市民課経験,採用年月日"></textarea>
+        <div class="row-actions">
+          <button id="staff-import-run" class="btn-primary">取り込む</button>
+          <button id="staff-import-cancel" class="btn-secondary">閉じる</button>
+        </div>
+      </div>
+      <p id="staff-empty-period-note" class="hint hidden"><strong class="hint-do">この処理期にはまだ名簿が取り込まれていません。上の「1. Excel名簿データの取り込み」から取り込んでください。</strong></p>
+
+      <div id="staff-roster-body" class="hidden">
+        <label>職員検索（番号・氏名・所属・係名・職名で絞り込み）
+          <input type="text" id="staff-search" placeholder="例：山田、総務課、派遣">
+        </label>
+        <p class="hint"><strong class="hint-do">外部組織へ派遣中の職員は「派遣（除外）」に、60歳以上で7割措置（再任用短時間等）の職員は「7割措置（除外）」にチェックしてください。</strong>チェックすると、区分名に関係なく常に日直の対象から外れます。<strong class="hint-do">選挙管理委員会事務局を併任している職員は「選挙管理委員会（併任）」にチェックしてください</strong>（常時除外ではなく、行事管理タブで登録した選挙の告示日前後の期間のみ対象から外れます）。一覧は所属CD順に表示されます。日直のペアは同性で組み、まず女性を優先的に割り当てます。その日に割り当てられる未割当の女性が1人もいなくなった日から男性ゾーンへ一方向に切り替わり、以後その処理期では女性を割り当てません（男性の期間に女性が単発で混ざり交代しづらくなることを防ぐため）。性別が未設定の職員は割当対象になりません。</p>
+
+        <p class="hint">「市民課経験」「派遣（除外）」「7割措置（除外）」「選挙管理委員会（併任）」のチェックは、Excel名簿の再取込時に前回処理期から職員番号単位で自動的に引き継がれます。<strong class="hint-do">異動や状況の変化がある場合があるため、取込後は内容をご確認ください。</strong></p>
+        <h3 id="staff-target-count">対象者リスト</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>身分</th><th>年齢</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>選挙管理委員会（併任）</th><th>採用日</th><th>退職予定日</th><th></th></tr>
+            </thead>
+            <tbody id="staff-tbody-target"></tbody>
+          </table>
+        </div>
+
+        <h3 id="staff-excluded-count">除外リスト</h3>
+        <p class="hint">秘書係・運転手・派遣・7割措置・常時除外所属・対象外（手動設定）のいずれかに該当する職員です。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>番号</th><th>氏名</th><th>級</th><th>性別</th><th>職名</th><th>所属課</th><th>係名</th><th>身分</th><th>年齢</th><th>市民課経験</th><th>派遣（除外）</th><th>7割措置（除外）</th><th>選挙管理委員会（併任）</th><th>除外理由</th><th>採用日</th><th>退職予定日</th><th></th></tr>
+            </thead>
+            <tbody id="staff-tbody-excluded"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ============ ルール設定 ============ -->
+  <section id="panel-rules" class="tab-panel">
+    <div class="card">
+      <h2>基本設定</h2>
+      <div class="grid-form">
+        <label>最低間隔日数（前回勤務日から空ける日数）<input type="number" id="opt-mingap" value="120" min="0"></label>
+        <label>新規採用職員の除外期間（ヶ月）<input type="number" id="opt-newhire" value="6" min="0"></label>
+        <label>年末年始・GWの遡り回数（同じ職員を避ける過去の回数）<input type="number" id="opt-lookback" value="2" min="0"></label>
+        <label>ペア重複の遡り年度数（同じ組合せを避ける年度数）<input type="number" id="opt-pair-lookback" value="2" min="0"></label>
+        <label>退職予定日の何ヶ月前まで割当対象とするか<input type="number" id="opt-retire-lead" value="1" min="0"></label>
+      </div>
+      <button id="opt-save" class="btn-primary">保存する</button>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>資格要件</h2>
+      </div>
+      <p class="hint">毎日の組合せ（係長級＋主事級）のうち少なくとも1名が、<strong>係長級</strong>または<strong>市民課経験者</strong>である必要があります。役職の個別登録は不要です。</p>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>常時除外する所属</h2>
+        <span class="hint"><strong class="hint-do">外局など、月や行事に関係なく常に日直の対象から外す所属をチェックしてください。</strong>（名簿に登録済みの所属のみ表示。所属CD順）。秘書係は係名から、運転手は兼職欄から自動判定もされます。</span>
+      </div>
+      <div id="standing-rule-list" class="chip-list"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>育休・産休・病気休暇による除外期間</h2>
+        <span id="leave-count" class="muted"></span>
+      </div>
+      <p class="hint">育児休業・産前産後休暇・病気休暇による除外期間です。登録期間中の日は自動的に対象外になります。同じ職員・同じ期間の行は自動的にスキップされます。また、名簿にない職員番号（会計年度任用職員等）は取り込まれません。一覧には選択中の処理期に関係する（期間が重なる）職員のみ表示されます。</p>
+      <label>育休Excelの取込
+        <input type="file" id="leave-xlsx-input" accept=".xlsx">
+      </label>
+      <p class="hint"><strong class="hint-do">出力方法：人事給与システムの「休業情報」で、検索条件１に「該当年の1/1（例：2026-1-1）」、条件１に「&gt;=」、対象１に「終了」を指定して検索。結果を Ctrl+A で全選択して任意のExcelファイルに貼り付け、そのExcelを取り込む。</strong></p>
+      <label style="margin-top:10px">産休Excelの取込
+        <input type="file" id="maternity-xlsx-input" accept=".xlsx">
+      </label>
+      <p class="hint"><strong class="hint-do">出力方法：人事給与システムの「出産情報」で、検索条件１に「該当年の1/1（例：2026-1-1）」、条件１に「&gt;=」、対象１に「産前休暇」を指定して検索。結果を Ctrl+A で全選択して任意のExcelファイルに貼り付け、そのExcelを取り込む。</strong></p>
+      <label style="margin-top:10px">病気休暇Excelの取込
+        <input type="file" id="sick-leave-xlsx-input" accept=".xlsx">
+      </label>
+      <p class="hint">職員番号・氏名・病名・開始・終了の列を含む.xlsxをそのまま取り込めます。「区分」欄には病名がそのまま表示されます。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>職員番号</th><th>氏名</th><th>区分</th><th>開始日</th><th>終了日</th><th></th></tr></thead>
+          <tbody id="leave-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card hidden" id="sick-leave-extension-card">
+      <div class="card-header-row">
+        <h2>長期病気休暇の延長確認</h2>
+      </div>
+      <p class="hint">病気休暇は実績ベースで登録されるため、この処理期中の病気休暇がまだ登録されていないことがあります。<strong>ひとつ前の処理期に病気休暇で合計15日以上休んでいた職員</strong>を、延長の可能性がある職員として一覧にしています。<strong class="hint-do">延長の可能性がある職員はチェックしてください。</strong>チェックした職員は、登録されている病気休暇の終了日に関係なく、この処理期の間ずっと割当対象から除外されます。チェックしなければ、登録されている終了日どおりに扱われます。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>除外する</th><th>職員番号</th><th>氏名</th><th>区分（病名）</th><th>前期の日数</th><th>前期の休暇期間</th></tr></thead>
+          <tbody id="sick-leave-extension-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>月別の課除外ルール</h2>
+        <span class="hint">例：10・11月はイベントが多いので商工観光課・広報係を除外／12・1月はふるさと納税繁忙期のためふるさと納税係を除外／1〜4月は税務課を除外</span>
+      </div>
+      <form id="monthrule-form" class="grid-form">
+        <label>対象月（カンマ区切り 例：10,11）<input type="text" id="mr-months" placeholder="10,11"></label>
+        <label>除外する課（カンマ区切り）<input type="text" id="mr-depts" placeholder="商工観光課,広報係"></label>
+        <label>備考<input type="text" id="mr-note" placeholder="イベントが多いため"></label>
+        <button type="submit" class="btn-primary">追加する</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>対象月</th><th>除外する課</th><th>備考</th><th></th></tr></thead>
+          <tbody id="monthrule-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>特例の除外（個別）</h2>
+        <span class="hint">例：前の処理期で2回勤務したため／体調不良が続いているため　など、自動判定の対象外の理由で今期の割当から外したい職員を、理由付きで個別に登録します。</span>
+      </div>
+      <p class="hint">ここに登録した職員は、選択中の処理期の間ずっと割当対象から除外されます。理由は必須で、勤務表作成の集計・未割当理由の説明に表示されます。</p>
+      <form id="special-exclusion-form" class="grid-form">
+        <label>職員<select id="se-staff"></select></label>
+        <label>理由<input type="text" id="se-reason" placeholder="前の処理期で2回勤務したため" required></label>
+        <button type="submit" class="btn-primary">追加する</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>職員番号</th><th>氏名</th><th>理由</th><th></th></tr></thead>
+          <tbody id="special-exclusion-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 行事管理 ============ -->
+  <section id="panel-events" class="tab-panel">
+    <div class="card">
+      <div class="card-header-row">
+        <h2>年度の選択</h2>
+        <div class="row-actions">
+          <label style="margin:0">年度
+            <select id="ev-fiscal-year"></select>
+          </label>
+          <button id="ev-copy-prev" class="btn-secondary">前年度の行事をコピー</button>
+        </div>
+      </div>
+      <p class="hint"><strong class="hint-do">行事の日程は年度ごとに変わるため、年度を選んで登録してください。</strong>日付を入力すると、リードタイム分をさかのぼった日から除外が始まり（既定では終了日は行事日）、「除外を続ける日数」を入力するとその日数分だけ終了日が後ろにずれます。選挙の場合は行事日に告示日を入力し、除外を続ける日数に投票日・開票作業等を見込んだ日数を入力することで、告示日の前後を除外期間にできます。</p>
+    </div>
+
+    <div class="card">
+      <h2>行事を追加</h2>
+      <form id="event-form" class="grid-form">
+        <label>行事名
+          <input type="text" id="ev-label" list="event-templates" placeholder="産業まつり">
+          <datalist id="event-templates">
+            <option value="産業まつり"></option>
+            <option value="花火大会"></option>
+            <option value="選挙"></option>
+            <option value="成人式"></option>
+          </datalist>
+        </label>
+        <label>行事日（選挙の場合は告示日）<input type="date" id="ev-date" required></label>
+        <label>除外リードタイム（日前から除外開始）<input type="number" id="ev-lead" value="30" min="0"></label>
+        <label>除外開始日（自動計算・上書き可）<input type="date" id="ev-exclude-from"></label>
+        <label>除外を続ける日数（行事日の何日後まで）<input type="number" id="ev-after" value="10" min="0"></label>
+        <label>終了日（自動計算・上書き可）<input type="date" id="ev-end"></label>
+        <button type="submit" class="btn-primary">追加する</button>
+      </form>
+      <div class="grid-form" style="margin-top:4px">
+        <label style="grid-column:1/-1">除外する所属（名簿から選択・複数可）
+          <select id="ev-depts" multiple size="5"></select>
+        </label>
+        <label class="checkbox-label" style="grid-column:1/-1">
+          <input type="checkbox" id="ev-target-election">
+          選挙管理委員会事務局を併任している職員（名簿で「選挙管理委員会（併任）」にチェックした職員）も対象にする
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 id="ev-list-title">行事一覧</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>行事名</th><th>行事日</th><th>除外開始日〜終了日</th><th>除外する所属</th><th>選挙管理委員会（併任）</th><th></th></tr></thead>
+          <tbody id="event-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 id="ev-prev-year-ref-title">前年度の登録状況（参考）</h2>
+      <p class="hint">閲覧のみです（編集・削除はできません）。日程を決める際の参考にしてください。</p>
+      <div class="table-wrap small-table" id="ev-prev-year-ref"></div>
+    </div>
+  </section>
+
+  <!-- ============ 勤務表作成 ============ -->
+  <section id="panel-generate" class="tab-panel">
+    <div class="card">
+      <h2>1. 対象期間・指定日</h2>
+      <p class="hint">対象期間は選択中の処理期（<strong id="gen-period-label"></strong>）から自動入力されます。必要に応じて変更できます。</p>
+      <div class="grid-form">
+        <label>開始日<input type="date" id="gen-start"></label>
+        <label>終了日<input type="date" id="gen-end"></label>
+      </div>
+      <button id="gen-list-dates" class="btn-secondary">土日・祝日・年末年始を自動抽出</button>
+      <p class="hint" id="gen-dates-summary"></p>
+      <div class="table-wrap small-table">
+        <table>
+          <thead><tr><th>日付</th><th>曜日</th><th>祝日等</th><th>対象</th></tr></thead>
+          <tbody id="gen-dates-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. 勤務表を作成</h2>
+      <div id="gen-confirmed-banner" class="gen-confirmed-banner hidden"></div>
+      <button id="gen-run" class="btn-primary">勤務表を作成する</button>
+      <p class="hint">既存の履歴（前回・前々回の勤務、120日ルール、ペア重複、資格要件等）を踏まえて自動で割り当てます。作成後は勤務表全体を見渡して、<strong>同性ペア・所属の除外・育休等の絶対条件を一切崩さない範囲で、より良い組合せへの入替えを自動的に行います</strong>（何をどれだけ改善したかは結果一覧の下に「改善したもの」「引き換えに増えたもの」に分けて表示されます）。<strong class="hint-do">「要確認」の日は候補者不足や制約の緩和など、手動での見直しが必要です。</strong>1日2名のうち少なくとも1名が係長級であればよいため、<strong>係長級2名の組合せ</strong>になることもあります（その場合、課長補佐・副主幹どうしの組合せは避けます）。人数不足でどうしても2名の枠を埋められない日は、状態欄に赤色で<strong>「エラー」</strong>と表示されます（それでも可能な限り、対象者を自動で最大限割り当てます）。各欄の名前の札はドラッグして、別の日・別の欄の職員と入れ替えられます（プルダウンでの変更もそのまま使えます）。</p>
+      <div id="gen-warning-summary"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>日付</th><th>曜日</th><th>祝日等</th><th>1人目</th><th>2人目</th><th>状態</th></tr></thead>
+          <tbody id="gen-result-tbody"></tbody>
+        </table>
+      </div>
+      <div id="gen-optimize-summary" class="hint"></div>
+      <div id="gen-unassigned-summary" class="hint"></div>
+      <div id="gen-overburdened-summary" class="hint"></div>
+      <div id="gen-approval-note" class="gen-notice-box">勤務表の内容を確認・決裁してから確定してください。</div>
+      <label id="gen-approval-checkbox-wrap" class="checkbox-label">
+        <input type="checkbox" id="gen-approval-check">
+        決裁が完了したことを確認しました（確定するには必須です）
+      </label>
+      <div class="row-actions">
+        <button id="gen-confirm" class="btn-primary" disabled>この内容で確定・履歴に保存</button>
+        <button id="gen-revert" class="btn-danger hidden">引き戻して修正</button>
+        <button id="gen-export" class="btn-secondary" disabled>CSVで書き出す</button>
+        <button id="gen-pdf" class="btn-secondary" disabled>PDFで書き出す</button>
+      </div>
+      <div id="gen-log"></div>
+    </div>
+  </section>
+
+  <!-- ============ 履歴・確認 ============ -->
+  <section id="panel-history" class="tab-panel">
+    <div class="card">
+      <h2>データのバックアップ</h2>
+      <p class="hint">名簿・ルール設定・行事・確定済み履歴・育休期間など、このアプリの全データを1つのファイル（JSON）にまとめて保存・復元できます。<strong class="hint-do">機種変更やブラウザのデータ消去に備えて、定期的にバックアップを作成してください。</strong>勤務表の確定・交代の反映の直後には、その場でバックアップを作成できるポップアップが自動的に表示されます。</p>
+      <p class="hint" id="backup-status"></p>
+      <div class="row-actions">
+        <button id="backup-export-btn" class="btn-primary">バックアップを作成する</button>
+        <label class="btn-secondary" style="display:inline-flex;align-items:center;cursor:pointer;">
+          バックアップから復元
+          <input type="file" id="backup-import-input" accept=".json" style="display:none">
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Excel勤務実績データの取り込み</h2>
+      <p class="hint">選択中の処理期（<strong id="history-xlsx-period-label"></strong>）に取り込まれます。<strong class="hint-do">過去の処理期の日直割を登録する場合は、上部の処理期セレクタで対象の処理期に切り替えてから取り込んでください。</strong></p>
+      <p class="hint">過去に作成した日直勤務表のデータ（.xlsx）をそのまま取り込めます。列構成は「日付・係長級の職員番号/氏名（・変更日時）・主事級の職員番号/氏名（・変更日時）」で、本アプリの「引継ぎ用に書き出す」機能の出力形式と同じです。名簿に登録のない職員番号は履歴専用の職員として自動登録され、担当状況の確認に利用できます。同じ日付が既にある場合は取り込んだ内容で上書きします。</p>
+      <input type="file" id="history-xlsx-input" accept=".xlsx">
+      <div id="history-xlsx-summary" class="hint"></div>
+      <div class="row-actions hidden" id="history-xlsx-actions">
+        <button id="history-xlsx-confirm" class="btn-primary">この内容で取り込む</button>
+        <button id="history-xlsx-cancel" class="btn-secondary">取消</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>確定済み履歴</h2>
+        <div class="row-actions">
+          <label style="margin:0;font-size:13px">表示
+            <select id="history-period-filter"></select>
+          </label>
+          <span id="history-count" class="muted"></span>
+          <button id="history-bulk-delete-btn" class="btn-danger">表示中の履歴を一括削除</button>
+          <button id="history-export-btn" class="btn-secondary">CSV書出</button>
+          <button id="history-pdf-btn" class="btn-secondary">PDF書出</button>
+          <button id="history-handover-btn" class="btn-secondary">引継ぎ用に書き出す</button>
+        </div>
+      </div>
+      <p class="hint">「表示中の履歴を一括削除」は、上の表示フィルタで絞り込まれている確定済み履歴をまとめて削除します（削除前に件数を表示して確認します）。<strong class="hint-do">この操作は元に戻せません。</strong>個別の日だけを削除したい場合は、各行の「削除」ボタンを使ってください。</p>
+      <p class="hint">「交代を反映」は、確定済みの勤務表に対して変更届による交代を反映するための機能です。開いた直後、<strong class="hint-do">この行の担当者＝変更届の申請者であることを氏名・日付付きで大きく表示します。交代相手（代わりに入る人）の行ではなく、必ず申請者本人の行から貼り付けてください。</strong>グループウェア等の申請内容画面をコピーしてテキストエリアに貼り付けるだけで、交代相手氏名・申請日時・変更する日付を読み取り、対象日と交代前後の氏名を「日付・氏名　←→　日付・氏名」のカードで示します。<strong class="hint-do">カードの内容を確認し、問題なければそのまま「反映する」を押してください。</strong>「変更する日付」は交代相手が担当している日として扱い、その日を自動的に「あわせて交換しますか？」に選びます。交代相手の担当予定が見つからない場合は赤字で警告し、そのまま「反映する」を押すと片道の交代でよいか確認します。<strong class="hint-do">申請者が別の行の担当者だった場合は、氏名等を自動入力せず、赤枠のカードで「変更届の申請者」と「この行の担当者」を左右に並べて食い違いを示し、「この行に切り替える」で貼り付けた内容ごと正しい行に切り替えられます。</strong>手動での入力・修正や、変更申請のスクリーンショット画像からの読み取りは「手動で入力・修正する」から行えます（読み取れなかった項目がある場合は自動的に開きます）。「反映する」を押した直後、変更後の組合せが同一課・性別不一致・課長補佐や副主幹の組合せ・担当回数の目安超過・最低間隔日数を下回る等のルールに反する場合は、ポップアップで日付・理由をお知らせします（反映自体は取り消されません）。スクリーンショットの読み取りは <code>python3 -m http.server</code> 等でアプリを配信して開いている場合のみ使用できます（<code>index.html</code> を直接開いた場合は使用できません）。テキストの貼り付けによる読み取りと手入力は、どちらの開き方でもご利用いただけます。反映した交代は、下の「変更届による交代の一覧」で、日付・氏名を4分割にした形で新しい順に確認できます。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>期間</th><th>日付</th><th>曜日</th><th>1人目</th><th>変更日時</th><th>2人目</th><th>変更日時</th><th>状態</th><th></th></tr></thead>
+          <tbody id="history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>変更届による交代の一覧</h2>
+      <p class="hint">「交代を反映」で反映した交代を、新しい順に一覧表示します。表示範囲は上の「確定済み履歴」の表示フィルタと連動します。<strong>2人が互いの担当日を入れ替えた場合は1行にまとめて「←→」で表示します</strong>（確定済み履歴の丸印と同じ色が付きます）。片道の交代は「→」で表示します。</p>
+      <div class="table-wrap small-table">
+        <table>
+          <thead><tr><th>反映日時</th><th>種別</th><th>日付</th><th>氏名</th><th></th><th>日付</th><th>氏名</th><th>申請日時</th></tr></thead>
+          <tbody id="change-log-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>担当実績のある職員の一覧</h2>
+      <p class="hint">表示範囲は上の「確定済み履歴」の表示フィルタと連動します。一度も日直に入っていない職員（未割当）の確認は、<strong>勤務表作成</strong>タブの「2. 勤務表を作成」で理由付きで確認できます。「履歴を見る」で、その職員が過去に勤務した日付を一覧で確認できます。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>番号</th><th>氏名</th><th>級</th><th>所属課</th><th>担当回数</th><th>直近の勤務日</th><th></th></tr></thead>
+          <tbody id="check-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 使い方 ============ -->
+  <section id="panel-help" class="tab-panel">
+    <div class="card">
+      <p class="hint"><strong class="hint-do">はじめてこのアプリを使う方は、画面の写真付きの操作マニュアル（PDF）から読んでください。</strong>バックアップの復元 → 勤務表の作成 → 変更届による交代の反映、の順に手順をまとめています。アプリのフォルダ内の <code>docs/日直勤務表アプリ_操作マニュアル.pdf</code> を開いてください（<a href="docs/日直勤務表アプリ_操作マニュアル.pdf" target="_blank" rel="noopener">このリンク</a>からも開けます）。</p>
+      <p class="hint">画面右下の「💬 使い方」ボタンから、知りたいことをキーワードや文章で質問できる<strong>使い方アシスタント</strong>を開けます。よくある質問のボタンからも選べます。検索結果には本文の抜粋が表示され、押すとチャット内でその場に本文全体を開けます（画面は切り替わりません）。「エクセル」「印刷」など、この使い方タブと言い回しが違う言葉で聞いても、近い意味の言葉に言い換えて探します。まずはこのページ（使い方）の中から探し、見つからない場合のみ仕様書・設計書も表示します（「詳しい資料も見る」）。外部との通信は行いません。</p>
+      <h2>新しい処理期で勤務表を作る（名簿等は登録済みの場合）</h2>
+      <p class="hint">名簿・ルール設定は既に登録済みで、新しい半期（例：次の前期／後期）の勤務表だけを作りたいときの手順です。</p>
+      <ol class="help-list">
+        <li>画面上部の処理期セレクタで「処理期を追加」を押し、新しい年度・区分（前期／後期）を選んで作成します。直前の処理期の「常時除外する所属」が自動的に引き継がれます（内容が変わっていれば<strong>ルール設定</strong>タブで調整してください）。</li>
+        <li><strong>名簿管理</strong>タブで、この処理期のExcel名簿を取り込みます（人事異動を反映した最新の名簿を毎回取り込んでください）。前回処理期に登録されていた「市民課経験」「派遣（除外）」「7割措置（除外）」「選挙管理委員会（併任）」は該当する職員に自動的に引き継がれます。<strong>引き継がれた内容が今の状況と合っているか、取込後に必ず確認してください。</strong></li>
+        <li>育休・産休・病気休暇で新たに対象外になった職員がいれば、<strong>ルール設定</strong>タブの「育休・産休・病気休暇による除外期間」で該当するExcelを取り込みます。</li>
+        <li>退職予定者がいれば、<strong>名簿管理</strong>タブの一覧で「退職予定日」を入力します（Excelの退職日欄に入っていれば自動で取り込まれます）。退職予定日の1ヶ月前（設定可）を過ぎた日は自動的に対象外になります。</li>
+        <li><strong>行事管理</strong>タブでその年度の行事日程を登録します。「前年度の行事をコピー」で前年度の行事名・除外所属を引き継いで日付だけ入力するか、「前年度の登録状況（参考）」を見ながら新規登録します。選挙がある場合は、行事日に<strong>告示日</strong>を入力し、「選挙管理委員会事務局を併任している職員も対象にする」にチェックします。</li>
+        <li><strong>勤務表作成</strong>タブへ移動すると対象期間は自動でこの処理期になっています。「土日・祝日・年末年始を自動抽出」→「勤務表を作成する」で割り当てます。</li>
+        <li>結果一覧を確認し、必要なら<strong>確定前に手動で割り当てを入れ替えます</strong>。
+          <ul>
+            <li><strong>プルダウンで変える：</strong>各日の「1人目」「2人目」のプルダウンから職員を選び直します。<strong>1人目は係長級に加えて、市民課経験のある主事級も選べます</strong>（選択肢に「・市民課経験者」と表示されます）。選んだ職員が<strong>他の1日だけに割り当て済みの場合は、その日の割当が自動的に取り消されます</strong>（＝移動として扱われます）。2日以上に割り当て済みの職員を選んだ場合は自動では取り消されないため、元の日を手動で「未定」に戻してください。</li>
+            <li><strong>ドラッグで入れ替える：</strong>各欄に表示された職員名の札をドラッグして、別の日・別の欄へドロップすると2人が入れ替わります。1人目・2人目の列をまたいだ入れ替えもできます。</li>
+            <li>入れ替え・変更のたびに、その日の組合せを自動で再判定します（係長級が含まれているか・性別が一致しているか・同一課でないか・課長補佐や副主幹の組合せでないか・同一処理期内の担当回数が目安を超えていないか）。問題があれば「要確認」または「補足」として理由が表示されますが、<strong>入れ替え自体は常に可能</strong>です。<strong>「要確認」「エラー」になった日があるときは、見落とし防止のためポップアップでも日付・理由をお知らせします</strong>（担当回数の目安の範囲内の「補足」はポップアップの対象外です）。</li>
+          </ul>
+        </li>
+        <li><strong>内容を決裁に回し、決裁が済んでから</strong>「決裁が完了したことを確認しました」にチェックを入れ、「確定・履歴に保存」を押します。なお、上の手順で内容を変更するとこのチェックは<strong>自動的に外れます</strong>（決裁を受けた内容と実際に確定する内容がずれないようにするためです）。修正したら改めてチェックを入れ直してください。</li>
+      </ol>
+
+      <h2>勤務表を変更する（変更届の反映）</h2>
+      <p class="hint">確定・掲示した後に「この日は代わってほしい」という<strong>変更届</strong>が出たときの手順です。<strong>履歴・確認</strong>タブで行います。日付はそのままで、担当する職員だけが入れ替わります。</p>
+      <ol class="help-list">
+        <li><strong>履歴・確認</strong>タブの「確定済み履歴」から、変更する日付の行を探します（表示フィルタの既定は選択中の処理期です）。</li>
+        <li>交代する側（係長級／主事級）の欄にある「交代を反映」ボタンを押します。</li>
+        <li>読み取り方法は3通りあります。いずれの場合も、読み取り結果は<strong>下書き</strong>として入力欄に入るだけなので、必ず内容を確認・修正してから反映してください。
+          <ul>
+            <li><strong>テキストを貼り付ける（推奨）：</strong>グループウェア等の申請内容画面をコピーして、モーダル上部のテキストエリアに貼り付けます。貼り付けるだけで自動的に「交代相手氏名」「申請日時」「変更する日付」「申請者」を読み取ります（「貼り付けたテキストから読み取る」ボタンで再実行もできます）。この方法は <code>index.html</code> をダブルクリックで直接開いた場合でも使えます。</li>
+            <li><strong>スクリーンショットから読み取る（OCR）：</strong>変更申請の画面を画像で保存し、ファイル選択から読み込みます。<code>python3 -m http.server</code> 等で配信して開いている場合のみ使用できます。人名の漢字は誤読することがあるため、特に注意して確認してください。</li>
+            <li><strong>手入力：</strong>「交代後の氏名」をプルダウンから選び、「申請日時」を入力します。</li>
+          </ul>
+        </li>
+        <li>読み取った<strong>変更対象日がその行の日付と違う</strong>場合、または読み取った<strong>申請者が現在の担当者と違う</strong>場合は警告が表示されます。別の変更届を読み込んでいないか確認してください。</li>
+        <li>「交代後の氏名」を選んだ時点で、<strong>その職員が同じ処理期の他の日にも担当予定がある場合</strong>、「あわせて交換しますか？」という選択欄が表示されます。交換したい日を選ぶと、<strong>1回の「反映する」操作で両方の日の担当が入れ替わります</strong>（選んだ日の担当が、この行の元の担当者に交代されます）。2人が互いの担当日を交換した変更届の場合、日付を2件ともOCR・テキストで読み取ろうとすると誤読や日付不一致の警告が出やすいため、この方法をお使いください。他の日に担当予定がない相手を選んだ場合は、この選択欄自体が表示されず、通常どおり片道の交代だけになります。</li>
+        <li>内容を確認して「反映する」を押すと、履歴の担当者と変更日時が更新されます。反映した変更日時はPDF・引継ぎ用Excelにもそのまま表示されます。</li>
+      </ol>
+      <p class="hint">変更届による交代で成立した組合せは、次回以降の<strong>ペア重複回避の判定対象外</strong>になります。一方、担当回数・前回勤務日・年末年始/GWの重複回避・1人1回の判定では、交代<strong>後</strong>の職員が担当したものとして扱われます。</p>
+      <p class="hint">2人が互いに担当日を交換した場合（上記の「あわせて交換しますか？」を使った場合、または2件を個別に「交代を反映」して結果的にAさんの日をBさんに・Bさんの日をAさんに変更した場合のいずれも）は自動的に検出され、確定済み履歴一覧とPDF書出の両方で、交換した2件に同じ色の丸印が表示されます（マーカーにカーソルを合わせると交代相手を確認できます）。</p>
+      <p class="hint">担当者の交代ではなく<strong>割当そのものを作り直したい</strong>場合は、下の「その他使い方」の「引き戻して修正」をご覧ください。確定前の入れ替えは、上の「新しい処理期で勤務表を作る」の手順7を参照してください。</p>
+
+      <h2>ルールの出典</h2>
+      <ul class="help-list">
+        <li>補佐級以下が対象。外局・秘書・運転手・会計年度任用職員・派遣・7割措置・育休/産休等の期間中の職員は除く。新規採用職員は採用から6ヶ月経過後から対象。</li>
+        <li>1日2名のうち少なくとも1名が係長級であればよい（係長級1名＋主事級1名が基本だが、係長級2名の組合せもある）。日直のペアは同性とし、女性を優先して割り当てる。その日に割り当てられる未割当の女性が1人もいなくなった日から男性ゾーンへ一方向に切り替わり、以後その処理期では女性を割り当てない。毎日の組合せのうち少なくとも1名は係長級または市民課経験者であること。同じ職場同士は組み合わせない。係長級2名の場合、課長補佐・副主幹どうしの組合せは避ける。</li>
+        <li>各行事の除外期間（リードタイムを含む）は担当課を除外する。10・11月は商工観光課・広報係、12・1月はふるさと納税係、1〜4月は税務課を除外。</li>
+        <li>選挙は告示日の前後を除外期間とし、選挙管理委員会事務局を併任している職員を対象から外す（所属ではなく名簿の個人チェックで指定する）。</li>
+        <li>年末年始（12/29〜1/3）・ゴールデンウィークは前回・前々回と同じ職員にならないよう配慮する。</li>
+        <li>係長級・主事級の組合せ（ペア）は過去2年度以内の重複を避ける。ただし変更届による交代は対象外とする。</li>
+        <li>前回勤務日から120日以上間隔を空ける（人数の都合で確保できない場合は、120日→90日→60日→30日→14日→7日の順に段階的に緩め、できるだけ広い間隔を確保したうえで、実際の間隔日数を理由欄に表示します）。</li>
+        <li>退職予定日の1ヶ月前を過ぎた職員は割り当てない。</li>
+        <li>同一処理期内は原則1人1回の割当とする（該当する候補が枯渇した場合に限り、その期2回目の割当を許可する）。</li>
+        <li>勤務表は決裁を受けてから確定する。確定後も作成時の内容を保持し、修正が必要な場合は引き戻したうえで再度決裁・確定する。</li>
+      </ul>
+
+      <h2>その他使い方</h2>
+      <p class="hint">名簿管理・行事管理・出力・バックアップなど、細かい機能をまとめています。長いので、必要なときだけボタンで開いてください。</p>
+      <button id="help-other-toggle" type="button" class="btn-secondary">その他使い方を表示する</button>
+      <div id="help-other-content" class="hidden">
+      <h3>処理期の管理（画面上部）</h3>
+      <ul class="help-list">
+        <li>画面上部で<strong>処理期</strong>（年度の前期=4〜9月/後期=10〜翌3月）を選びます。以降の作業はすべてこの処理期に対するものになります。「処理期を追加」で新しい期を作成でき（過去の年度も作成可）、直前の処理期の「常時除外する所属」を自動的に引き継ぎます。「前回処理期からコピー」を押すと、この「常時除外する所属」の引き継ぎ内容をいつでも取り込み直せます。「この処理期を削除」で処理期自体を削除できます（紐づく確定済み履歴は消えず「未分類」として残ります）。</li>
+        <li><strong>過去分の実績だけを登録したい場合：</strong>終了日が過去の処理期を選択すると案内バナーが表示されます。名簿登録・ルール設定・行事管理・勤務表作成の作業を省き、<strong>履歴・確認</strong>タブの「Excel勤務実績データの取り込み」だけで登録できます。列構成は「日付・係長級の職員番号/氏名（・変更日時）・主事級の職員番号/氏名（・変更日時）」で、「引継ぎ用に書き出す」機能の出力形式と同じです。名簿に登録のない職員番号は履歴専用の職員として自動登録され、担当状況の確認に利用できます。同じ日付が既にある場合は取り込んだ内容で上書きします。</li>
+      </ul>
+
+      <h3>名簿管理タブ</h3>
+      <ul class="help-list">
+        <li><strong>1. Excel名簿データの取り込み：</strong>人事給与システムで「在職・写真無・詳細」の条件で検索し、結果をCtrl+Aで全選択して任意のExcelファイルに貼り付け、そのファイルをここで取り込みます。番号・氏名・職名・所属CD・所属名・性別・係名・兼職・区分名・身分・年度年齢・ランク・採用日・退職日・在職の列を含む.xlsxをそのまま取り込めます。級は原則<strong>ランク</strong>から自動判定します（1〜399：課長級以上は除外／400〜600：係長級／601〜999：主事級／1000以降：会計年度任用職員等は除外）。性別は<strong>1＝男性、0＝女性</strong>として自動判定します。区分名が「会計年度任用職員」「派遣」の職員、退職者・非在職者も自動的に除外されます。ランクが読み取れない職名のみ、その都度「係長級/主事級/取り込まない」を指定する画面が出ます（指定内容は記憶され、次回以降の取込に自動的に適用されます）。</li>
+        <li><strong>名簿は処理期ごとに管理されます。</strong>取り込むと選択中の処理期の名簿はその内容にすべて置き換わります（この処理期でCSV取込した職員も置き換え対象です）。前回処理期に登録されていた同じ職員番号の「市民課経験」「派遣（除外）」「7割措置（除外）」「選挙管理委員会（併任）」は自動的に引き継がれます（現在の所属が市民課の職員は市民課経験が自動でチェックされます）。<strong>引き継がれた内容が今の状況と合っているか、取込後に必ず確認してください。</strong></li>
+        <li><strong>名簿一覧のチェック項目：</strong>「市民課経験」「派遣（除外）」「7割措置（除外）」「選挙管理委員会（併任）」のチェックと「退職予定日」はその場で変更できます。<strong>派遣・7割措置</strong>にチェックすると常に対象から外れます。<strong>選挙管理委員会（併任）</strong>は常時除外ではなく、行事管理タブで登録した選挙の除外期間だけ対象から外れます。<strong>退職予定日</strong>を入れると、その1ヶ月前（ルール設定で変更可）を過ぎた日から対象外になります。一覧は所属CD順に表示されます。</li>
+        <li><strong>CSV取込：</strong>Excel名簿に含まれない職員をまとめて登録したい場合や、大量の職員を一括で登録したい場合に使います。ヘッダー行付きCSV（番号,氏名,級(係長級/主事級),所属課,市民課経験(TRUE/FALSE),採用年月日(YYYY-MM-DD)）を貼り付けて取り込みます。性別はExcel取込時にのみ自動設定されるため、CSV取込した職員は性別が未設定となり日直の割当対象になりません。この処理期でExcel名簿を再取込すると、CSV取込分も含めて名簿全体が取込内容に置き換わります。</li>
+        <li><strong>職員検索：</strong>「職員検索」欄に番号・氏名・所属・係名・職名の一部を入力すると、名簿の一覧を絞り込めます。人数の多い名簿で特定の職員のチェックを変更したいときに便利です。</li>
+        <li><strong>CSV書出：</strong>「CSV書出」で名簿全体を出力できます。「Excel取込で除外された人をCSV書出」「除外リストの人をCSV書出」では、除外された職員を職員番号・区分名・身分・名前・所属名・職名・年齢（除外リストは除外理由も）の列で出力できます。誰がなぜ対象外になっているかを確認・共有したいときに使います。</li>
+      </ul>
+
+      <h3>ルール設定タブ</h3>
+      <ul class="help-list">
+        <li><strong>基本設定・資格要件：</strong>最低間隔日数（既定120日）・新規採用職員の除外期間（既定6ヶ月）・年末年始/GWの遡り回数（既定2回）・ペア重複の遡り年度数（既定2年度）・退職予定日の何ヶ月前まで割当対象とするか（既定1ヶ月）を設定します。</li>
+        <li><strong>常時除外する所属：</strong>チェックボックスで選んだ所属は常に日直の対象から外れます。新しい処理期を作成すると直前の処理期の設定が自動的に引き継がれます（画面上部の「前回処理期からコピー」でいつでも取り込み直せます）。</li>
+        <li><strong>育休・産休・病気休暇による除外期間：</strong>育休一覧・産休一覧・病気休暇一覧のExcelをそのまま取り込みます。病気休暇は病名がそのまま「区分」欄に表示されます。終了日が未定の場合は空欄のまま取り込まれ、復帰まで対象外として扱われます。<strong>産休は終了日を過ぎても、育休が別途登録されるまで対象外が続きます</strong>（産休の後は必ず育休に入るとみなすため）。</li>
+        <li><strong>長期病気休暇の延長確認：</strong><strong>ひとつ前の処理期に病気休暇で合計15日以上休んでいた職員</strong>がいる場合、延長の可能性がある職員として育休・産休の下に一覧が表示されます（同一職員の複数の病気休暇記録は前期分を合算し、終了日が未登録の休暇は前期末まで続いたものとして数えます）。<strong class="hint-do">延長の可能性がある職員はチェックしてください。</strong>チェックした職員は、登録された病気休暇の終了日に関係なく、この処理期の間ずっと割当対象から除外されます。</li>
+        <li><strong>月別の課除外ルール：</strong>対象月（カンマ区切り、例:10,11）・除外する課（カンマ区切り）・備考を登録します。例:10・11月は商工観光課・広報係、12・1月はふるさと納税係、1〜4月は税務課を除外。</li>
+        <li><strong>特例の除外（個別）：</strong>「前の処理期で2回勤務した」「体調不良が続いている」など、自動判定ではカバーできない理由で特定の職員を今期の割当から外したいときに使います。選択中の処理期の名簿から職員を選び、理由（必須）を入力して登録すると、<strong class="hint-do">その職員は選択中の処理期の間ずっと割当対象から外れます。</strong>育休・産休等と同じ仕組みで除外するため緩和されません。未割当職員の理由の説明欄には、育休・産休等とは分けて登録した理由がそのまま表示されます。不要になったら一覧から削除してください（削除すると通常どおり割当対象に戻ります）。</li>
+      </ul>
+
+      <h3>行事管理タブ</h3>
+      <ul class="help-list">
+        <li><strong>行事の登録：</strong>年度ごとに行事（産業まつり・花火大会・選挙・成人式等）の日程と除外する所属を登録します。「除外リードタイム」（既定30日）で行事日から遡った期間を、「除外を続ける日数」（既定10日）で行事日より後の期間を、それぞれ自動的に除外できます（除外開始日・終了日は自動計算され、手動で上書きもできます）。</li>
+        <li><strong>選挙の登録：</strong>行事日に<strong>告示日</strong>を入力し、「選挙管理委員会事務局を併任している職員も対象にする」にチェックすると、名簿で「選挙管理委員会（併任）」にチェックした職員が、告示日の前後（リードタイム〜除外を続ける日数）だけ対象から外れます。選挙管理委員会事務局は名簿上の所属として存在しない（併任のため）ので、所属ではなくこの個人単位のチェックで指定します。ただし他の職員だけでは2名の枠を埋められない場合に限り、この除外は緩和され、その旨が「要確認」として表示されます。</li>
+        <li><strong>前年度からのコピー：</strong>「前年度の行事をコピー」を使うと、前年度の行事名・除外所属・除外リードタイム・除外を続ける日数・選挙管理委員会併任者を対象にするかの設定を引き継ぎ、日付だけ入力すれば済みます（「前年度の登録状況（参考）」で前年度の一覧を見ながら登録することもできます）。</li>
+      </ul>
+
+      <h3>勤務表作成タブ</h3>
+      <ul class="help-list">
+        <li><strong>対象期間・指定日の抽出：</strong>対象期間は処理期から自動入力されます。「土日・祝日・年末年始を自動抽出」を押すと指定日が一覧化されます（年末年始は12/29〜1/3を曜日を問わず含みます）。対象期間内の日がすべて確定済み履歴に含まれている場合は0件になり、その旨のメッセージが表示されます。不要な日は対象から外せます。</li>
+        <li><strong>自動割当のロジック：</strong>「勤務表を作成する」を押すと、2名（1人目は係長級・2人目は係長級または主事級）の組合せを自動で割り当てます。<strong>1日2名のうち少なくとも1名が係長級であればよい</strong>ため、係長級1名＋主事級1名の組合せに加えて、係長級2名の組合せにもなります（両方とも対等に扱われます。係長級2名の場合、双方の職名が課長補佐・副主幹の組合せにならないよう配慮します）。日直のペアは同性で組み、まず女性を優先して割り当てます。その日に割り当てられる未割当の女性が1人もいなくなった日から男性ゾーンへ一方向に切り替わり、いったん男性ゾーンに入ったら以後その処理期では女性を割り当てません（男性の期間に女性が単発で混ざり交代しづらくなることを防ぐため）。<strong>同一処理期内は原則1人1回の割当</strong>とし、その期でまだ割り当てていない職員を優先します（該当する候補が枯渇した場合に限り、その期2回目の割当を許可し「要確認」として表示します）。<strong>今期まだ割り当てていない係長級が尽きた場合は、まず市民課経験のある主事級を1人目に立てます</strong>（毎日の組合せのうち少なくとも1名が係長級<strong>または市民課経験者</strong>であればよい、というルールに基づきます）。それでも組めない場合に限り、既に割り当て済みの職員に2回目以降を担ってもらって、今期まだ割り当てていない職員に1回目を回します（この積み増しは<strong>担当回数の上限</strong>までです。上限は「対象日数×2枠÷対象職員数を切り上げた回数＝担当回数の目安」に1回を足した回数で、名簿と対象日数から自動で決まります。上限内で2名がそろわない場合や、資格要件を満たせない場合に限り、上限を外して探し直します）。これがないと、係長級が少ない性別で、その性別の職員が処理期を通して1回も割り当てられずに終わってしまいます。<strong>係長級を含まない日は「要確認」として表示され、その日数は結果一覧の上の集計にも出ます。</strong><strong>今期まだ割り当てていない職員が、月別の課除外ルールや行事の除外期間（所属除外）だけで対象外になっている場合は、既に割り当て済みの職員に2回目を回すより先に、その職員の所属除外だけを緩和して優先的に割り当てます</strong>（最低間隔日数を段階的に緩めても組めない場合に限ります）。緩和した日は「所属除外ルール（◯◯課）を緩和し、今期まだ一度も割り当てていない職員を優先したため割り当てました」として要確認に表示され、対象になった所属名も明記されます。育休・産休等の除外期間、常時除外（派遣・7割措置・秘書係・運転手等）、選挙管理委員会事務局（併任）の除外、退職予定日、新規採用職員の除外はこの緩和では一切変わりません。<strong>同一課の組合せ・過去のペアとの重複は作りません（マスト）。</strong>この2つは通常の割当では一切許容せず、「その日の2名をどうしても埋められない（人数不足エラーになる）」場合と、「今期まだ0回の職員に初めての出番を作る」場合にだけ、やむを得ず緩和して要確認に表示します。資格要件（係長級または市民課経験者が最低1名）・120日間隔・年末年始やGWの重複回避も踏まえます。</li>
+        <li><strong>作成後の自動見直し：</strong>作成が終わると、勤務表全体を見渡して<strong>より良い組合せへの入替えを自動的に行います</strong>。入替えの際、<strong>同性ペア・その日の性別ゾーン・育休や産休等の除外期間・所属の除外ルール・行事の除外期間・選挙管理委員会（併任）の除外・新規採用や退職予定日の除外・年末年始やGWの重複回避は一切崩しません</strong>。また、<strong>資格要件（係長級または市民課経験者）を満たさない日を新たに作らない・勤務間隔を14日より詰めない・担当回数の上限を超えて増やさない</strong>という3つも守ります。係長級を含む日から係長級を外すことも原則しません（<strong>今期0回の職員に出番を作る場合</strong>と、<strong>担当回数の上限を超えている職員の負担を減らす場合</strong>だけは、そちらを優先して外すことがあります）。「1回も割り当てられていない職員をなくす」ことを最優先に、担当回数の偏り・勤務間隔・過去のペアとの重複・同一課・課長補佐と副主幹の組合せ・資格要件を総合的に見て、良くなる入替えだけを採用します。このとき<strong>「出番の窓」の狭さを考慮します</strong>。月別の課除外ルールや行事の除外期間、育休等に当たりやすい職員は、その処理期に入れる日が数日しかないことがあります。その数日を「他にも入れる日がたくさんある職員」に取られると以後どこにも入れられなくなるため、<strong>入れる日が少ない職員から先に席を確保し、担当回数が同じなら入れる日が少ない職員に枠を譲ります</strong>。それでも入らない職員がいる場合は、<strong>玉突き（連鎖）の入れ替えを最大5段まで探します</strong>（例：Aさんが入れる日にいるBさんを別の日へ動かし、空いた枠にAさんを入れる。Bさんの移動先は複数回担当している人の枠にする——というように、人が手作業で組んでいたときと同じ考え方で数手先まで読みます）。また、<strong>女性の2回目だけで埋まっている日は、今期まだ0回の男性2名に差し替えます</strong>（男性側にも2回目が混じる場合や、外す女性が0回になってしまう場合は差し替えません）。何件入れ替えて何がどう変わったかは、結果一覧の下に<strong>「改善したもの」と「引き換えに増えたもの」に分けて</strong>表示されます（全員に出番を作ること・担当回数の偏りをなくすことを優先しているため、その代わりに係長級を含まない日が増えることがあります。隠さずに表示します）。同じ内容で作り直せば必ず同じ結果になります。<strong>作成後に手動で入れ替えると、この表示は消えます</strong>（実態と合わなくなるため）。</li>
+        <li><strong>未割当職員の確認：</strong>結果一覧の下には、今期まだ一度も割り当てられていない対象職員とその理由（育休・産休中、所属の除外ルールに該当、選挙管理委員会（併任）の除外期間中、退職予定日を過ぎている、前回勤務日から120日未満、自分の性別のゾーンでなかった、担当回数の上限に達した職員しか残っていなかった、今期の割当枠が他の職員で埋まった 等）が表示されます。あわせて、今期の担当回数が2回以上の職員が最大・平均の担当回数とともに一覧表示され、偏りを確認できます。</li>
+        <li><strong>「要確認」の行と「補足」の行：</strong>緩和して割り当てた内容は<strong>必ず理由欄に表示します</strong>。表示は2段階に分かれます。<strong>「要確認」（黄色）</strong>は担当者に判断してほしい内容（担当回数の目安を超えた／確保できる間隔の目安を下回った／所属除外ルールの緩和／同一課・課長補佐と副主幹の組合せ・過去のペアと重複・係長級を含まない・選挙管理委員会（併任）の特例）。<strong>「補足」（薄い青色）</strong>は人数の都合でどうしても避けられない内容（担当回数が目安の範囲内の2回目、最低間隔日数は下回るものの確保できる間隔の目安には収まっている日）です。理由文には実際の間隔日数や担当回数と、その目安も表示します（例：「前回勤務日から62日です（最低間隔120日を確保できませんでした／この処理期で確保できる間隔の目安は88日）」）。理由を確認し、名簿やルールを調整するか、必要に応じて手動で調整してください。人数不足でどうしても通常の組合せが作れない日は、<strong>その時点の性別ゾーンに固定したまま</strong>、係長級の有無・120日間隔・選挙管理委員会（併任）の除外を緩和した最終手段で対象者を自動で最大限（2名、無理なら1名）割り当てます。それでも2名の枠を埋められなかった日は、状態欄に赤色で「エラー」と表示されます。</li>
+        <li><strong>決裁確認・確定：</strong>内容を確認し、決裁を受けてから「決裁が完了したことを確認しました」にチェックを入れ、「確定・履歴に保存」を押すと履歴に記録されます。確定後も勤務表作成タブの内容（指定日・割当結果・未割当職員や担当回数のサマリ）はそのまま保持され、タブを移動しても画面を再読み込みしても消えません。確定中は編集がロックされ、自動処理等で内容が変わることはありません。</li>
+        <li><strong>「引き戻して修正」（確定後に勤務表を作り直す）：</strong>確定済みの状態では確定バナーが表示され、指定日の抽出・作成・プルダウン・ドラッグはすべてロックされます。作り直したいときは「引き戻して修正」を押し、確認ダイアログで承認すると、<strong>その回に確定した分だけ</strong>が確定済み履歴から削除され、再び編集できる状態に戻ります（Excel勤務実績取込や変更届で入れた他の履歴には影響しません）。
+          <ul>
+            <li>引き戻す前の確定内容は消えません。画面下部の「<strong>作成履歴</strong>」に確定日時・引き戻し日時・件数とともに残り、行ごとに「CSVで書き出す」でその回の割当内容を再出力できます。「確定→引き戻し→再確定」を何度繰り返しても、それぞれの確定内容が残ります。</li>
+            <li>修正したら改めて決裁を受け、チェックを入れて再度確定します。</li>
+            <li><strong>この改修より前に確定した勤務表には「引き戻して修正」は使えません</strong>（確定状態を記録する仕組みが当時なかったためです）。その場合は、履歴・確認タブで該当する日の履歴を個別に「削除」するか、表示フィルタで絞り込んで「表示中の履歴を一括削除」してから作り直してください。</li>
+          </ul>
+        </li>
+      </ul>
+
+      <h3>履歴・確認タブ</h3>
+      <ul class="help-list">
+        <li><strong>Excel勤務実績データの取り込み：</strong>過去に作成した日直勤務表のデータ（.xlsx）をそのまま取り込めます。列構成は「日付・係長級の職員番号/氏名（・変更日時）・主事級の職員番号/氏名（・変更日時）」で、「引継ぎ用に書き出す」機能の出力形式と同じです。名簿に登録のない職員番号は履歴専用の職員として自動登録されます。同じ日付が既にある場合は取り込んだ内容で上書きします。選択中の処理期に取り込まれるため、過去の処理期に登録する場合は先に画面上部で処理期を切り替えてください。</li>
+        <li><strong>確定済み履歴の操作：</strong>変更届による交代の反映（「交代を反映」）、履歴の個別削除・表示中の履歴の一括削除、CSV・PDF・引継ぎ用Excelの書き出し、全データのバックアップ作成・復元ができます。表示フィルタの既定は選択中の処理期で、「全期間」「未分類」にも切り替えられます。<strong>CSV書出・PDF書出は、この表示フィルタで絞り込んだ範囲だけを出力します。</strong>一方、「引継ぎ用に書き出す」は後任者へ履歴を丸ごと渡すためのものなので、表示フィルタに関わらず常に全履歴を出力します。</li>
+        <li><strong>変更届による交代の一覧：</strong>確定済み履歴の下に、「交代を反映」で反映した交代を新しい順に一覧表示します（表示範囲は上の表示フィルタと連動します）。<strong>どの日の誰と、どの日の誰を入れ替えたのかが、日付と氏名を分けた列でひと目で分かります。</strong>2人が互いの担当日を入れ替えた交換は1行にまとめて「←→」で、色マーカーも表示します。片道の交代は「→」で、入れ替え先の日付欄は「―」になります。</li>
+        <li><strong>担当実績の確認：</strong>下部の「担当実績のある職員の一覧」で、職員ごとの<strong>担当回数と直近の勤務日</strong>を担当回数の少ない順に確認できます（表示範囲は上の表示フィルタと連動します）。「履歴を見る」を押すと、その職員が過去に担当した全ての日付と役割が表示されます。次回の割当で誰を優先すべきかを確認したいときに使います。</li>
+        <li><strong>出力：</strong>勤務表・履歴のCSV、PDF（勤務表PDFは処理期の前半3ヶ月・後半3ヶ月を指定ページに分けて出力します。列見出しはいずれも「氏名」に統一）、引継ぎ用Excel（担当交代の際に履歴を丸ごと次の担当者へ渡せます）に対応しています。PDFは表を画像化せず文字・罫線を直接描画する方式のため、ファイルサイズが小さく、PDF内の文字はコピー・検索もできます。</li>
+        <li><strong>データのバックアップ（重要）：</strong>データはブラウザ（端末）ごとに保存され、他の端末とは共有されません。「バックアップを作成する」で、名簿・ルール設定・行事・確定済み履歴・除外期間などの<strong>全データを1つのJSONファイル</strong>に書き出せます。<strong>機種変更やブラウザのデータ消去に備えて、定期的に作成してください。</strong>「バックアップから復元」で書き戻せます（古い形式のバックアップにも対応しています）。「データのバックアップ」欄には、前回バックアップした日時とそれ以降の未バックアップの変更件数が常に表示されます。<strong>勤務表を確定したとき、交代を反映したときには、その場でバックアップを作成できるポップアップが自動的に表示されます。</strong>「あとで」を押しても操作は取り消されず、未バックアップの件数として残り続けます。</li>
+        <li><strong>担当を引き継ぐとき：</strong>前任者が「引継ぎ用に書き出す」でExcelを出力して後任者へ渡し、後任者は自分の端末でExcel名簿を取り込んだうえで、そのファイルを「Excel勤務実績データの取り込み」から読み込みます。引継ぎが完了したら、前任者はブラウザの閲覧データ削除でデータを消去してください。</li>
+      </ul>
+
+      <h3>その他のTips</h3>
+      <ul class="help-list">
+        <li><strong>仕様書・設計書</strong>タブでは、このアプリの仕様書・設計書を画面上で閲覧できます。見出しから目次が自動生成されるので、割当ルールの細かい条件や優先順位を確認したいときに参照してください。</li>
+      </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 仕様書・設計書 ============ -->
+  <section id="panel-docs" class="tab-panel">
+    <div class="card">
+      <div class="row-actions" style="margin-bottom:14px">
+        <button class="doc-switch-btn active" data-doc="spec">仕様書</button>
+        <button class="doc-switch-btn" data-doc="design">設計書</button>
+      </div>
+      <div id="doc-content" class="doc-content"></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+<div id="modal-root"></div>
+<div id="backup-modal-root"></div>
+
+<button id="chatbot-toggle" class="chatbot-toggle" type="button" title="使い方について聞く">💬<span class="chatbot-toggle-label">使い方</span></button>
+<div id="chatbot-panel" class="chatbot-panel hidden">
+  <div class="chatbot-header">
+    <span>使い方アシスタント</span>
+    <button id="chatbot-close" type="button" class="chatbot-close" aria-label="閉じる">×</button>
+  </div>
+  <div id="chatbot-messages" class="chatbot-messages"></div>
+  <form id="chatbot-form" class="chatbot-form">
+    <input type="text" id="chatbot-input" placeholder="例：行事の登録方法" autocomplete="off">
+    <button type="submit" class="btn-primary">送信</button>
+  </form>
+</div>
+
+<script src="vendor/xlsx.core.min.js"></script>
+<script src="vendor/jspdf.umd.min.js"></script>
+<script src="vendor/notosansjp-regular.b64.js"></script>
+<script src="vendor/tesseract.min.js"></script>
+<script src="docs-content.js"></script>
+<script src="app.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>
