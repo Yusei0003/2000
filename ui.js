@@ -2817,10 +2817,10 @@ function buildChangeLogRows() {
       appliedAt: log.appliedAt,
       kind: partner ? 'swap' : 'oneway',
       color: partner && marker ? marker.color : null,
-      from: { date: log.date, level: log.level, name: log.fromName },
+      from: { date: log.date, level: log.level, id: log.fromId, name: log.fromName },
       to: partner
-        ? { date: partner.date, level: partner.level, name: partner.fromName }
-        : { date: null, level: null, name: log.toName },
+        ? { date: partner.date, level: partner.level, id: partner.fromId, name: partner.fromName }
+        : { date: null, level: null, id: log.toId, name: log.toName },
     });
   });
   return rows;
@@ -2848,7 +2848,7 @@ function renderChangeLogTable() {
       : '<span class="changelog-none">―</span>';
   tbody.innerHTML = rows
     .map((r) => {
-      const loggedText = r.loggedAt ? String(r.loggedAt).slice(0, 16).replace('T', ' ') : '';
+      const loggedText = formatLoggedAt(r.loggedAt);
       const arrow = r.kind === 'swap' ? '←→' : '→';
       return `<tr>
         <td>${escapeHtml(loggedText)}</td>
@@ -2862,6 +2862,148 @@ function renderChangeLogTable() {
       </tr>`;
     })
     .join('');
+}
+/** 反映日時（世界標準時で記録した ISO 文字列）を、この端末の時刻（日本時間）で「YYYY-MM-DD HH:MM」にする。
+ *  記録の文字列をそのまま切り出すと9時間早い時刻になるため、必ずこれを通して表示する。 */
+function formatLoggedAt(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso).slice(0, 16).replace('T', ' ');
+  return `${toISO(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+/** 「変更届による交代の一覧」を書き出す表（見出し＋行）を組み立てる。
+ *  画面の一覧と同じく、交換は1行に「日付・氏名 ←→ 日付・氏名」でまとめ、職員番号を添える。
+ *  片道の交代は2つ目の日付を「―」にする。表示範囲・並び順も画面と同じ。
+ *  colors は各行の交換ペアの色（PDFの丸印用。片道は null）。 */
+const CHANGE_LOG_EXPORT_HEADER = ['反映日時', '種別', '日付', '曜日', '欄', '職員番号', '氏名', '', '日付', '曜日', '欄', '職員番号', '氏名', '申請日時'];
+function changeLogExportTable() {
+  const weekdayOf = (d) => {
+    const rec = history.find((h) => h.date === d);
+    return rec ? WEEKDAY_LABEL[rec.weekday] : '';
+  };
+  const slotLabel = (level) => (level === 'senior' ? '1人目' : level === 'junior' ? '2人目' : '');
+  const numberOf = (id) => (id && (resolveAnyStaff(id) || {}).number) || '';
+  const side = (p) => [
+    p.date || '―',
+    p.date ? weekdayOf(p.date) : '',
+    slotLabel(p.level),
+    String(numberOf(p.id)),
+    p.name || '未定',
+  ];
+  const list = buildChangeLogRows();
+  return {
+    header: CHANGE_LOG_EXPORT_HEADER,
+    rows: list.map((r) => [
+      formatLoggedAt(r.loggedAt),
+      r.kind === 'swap' ? '交換' : '交代',
+      ...side(r.from),
+      r.kind === 'swap' ? '←→' : '→',
+      ...side(r.to),
+      r.appliedAt || '',
+    ]),
+    colors: list.map((r) => r.color),
+  };
+}
+/** 書き出したファイルの名前に付ける日付（この端末の今日） */
+function changeLogExportBaseName() {
+  return `変更届による交代の一覧_${toISO(new Date())}`;
+}
+function exportChangeLogXlsx() {
+  const { header, rows } = changeLogExportTable();
+  if (!rows.length) {
+    alert('この表示範囲に、書き出す交代の記録がありません');
+    return;
+  }
+  // 職員番号の先頭の0が消えないよう、すべて文字として入れる
+  const ws = XLSX.utils.aoa_to_sheet([header].concat(rows));
+  ws['!cols'] = [17, 6, 11, 5, 6, 9, 14, 4, 11, 5, 6, 9, 14, 17].map((wch) => ({ wch }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '変更届による交代の一覧');
+  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  downloadBlob(changeLogExportBaseName() + '.xlsx', new Blob([wbout], { type: 'application/octet-stream' }));
+  showToast('交代の一覧をExcelで書き出しました');
+}
+/** 交代の一覧をA4横のPDFにする。罫線・文字・色の丸印は勤務表のPDFと同じ描き方にそろえる。
+ *  交換の行には、画面と同じく1つ目の日付の前に交換ペアの色の丸印を付ける。 */
+function exportChangeLogPdf() {
+  const { header, rows, colors } = changeLogExportTable();
+  if (!rows.length) {
+    alert('この表示範囲に、書き出す交代の記録がありません');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4', compress: true });
+  ensurePdfFont(pdf);
+  const margin = 24;
+  const usableWidth = pdf.internal.pageSize.getWidth() - margin * 2;
+  const usableHeight = pdf.internal.pageSize.getHeight() - margin * 2;
+  const MARKER_COL = 2; // 1つ目の「日付」列
+  const markerW = ROSTER_MARKER_DIAM + ROSTER_MARKER_GAP;
+
+  // 列幅：中身の幅に合わせ、ページ幅に収まらなければ縮め、余れば広げる（勤務表のPDFと同じ考え方）
+  pdf.setFont(PDF_FONT_NAME, 'normal');
+  pdf.setFontSize(ROSTER_BASE_FONT_SIZE);
+  const natural = header.map((h, i) => {
+    let max = pdf.getTextWidth(h);
+    rows.forEach((r, ri) => {
+      const extra = i === MARKER_COL && colors[ri] ? markerW : 0;
+      max = Math.max(max, extra + pdf.getTextWidth(r[i]));
+    });
+    return max + ROSTER_PAD_X * 2;
+  });
+  const naturalWidth = natural.reduce((x, y) => x + y, 0) || 1;
+  const shrink = Math.min(1, usableWidth / naturalWidth);
+  const fontSize = ROSTER_BASE_FONT_SIZE * shrink;
+  const rowHeight = fontSize * ROSTER_ROW_HEIGHT_FACTOR;
+  const colWidths = natural.map((w) => w * (usableWidth / naturalWidth));
+
+  const sel = document.getElementById('history-period-filter');
+  const rangeLabel = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
+  const title = `変更届による交代の一覧（${rangeLabel}）`;
+  const headingHeight = ROSTER_TITLE_FONT_SIZE + ROSTER_TITLE_GAP;
+  const rowsPerPage = Math.max(1, Math.floor((usableHeight - headingHeight - rowHeight) / rowHeight));
+
+  const drawRow = (cells, y, isHeader, color) => {
+    pdf.setFontSize(fontSize);
+    let cx = margin;
+    cells.forEach((text, i) => {
+      const w = colWidths[i];
+      // 塗り色は毎回設定し直す（drawRosterHeaderRow の注記と同じ jsPDF の不具合対策）
+      pdf.setDrawColor(...ROSTER_BORDER_COLOR);
+      pdf.setLineWidth(ROSTER_LINE_WIDTH);
+      if (isHeader) {
+        pdf.setFillColor(...ROSTER_HEADER_FILL);
+        pdf.rect(cx, y, w, rowHeight, 'FD');
+      } else {
+        pdf.rect(cx, y, w, rowHeight);
+      }
+      let tx = cx + ROSTER_PAD_X;
+      if (!isHeader && i === MARKER_COL && color) {
+        pdf.setFillColor(...hexToRgb(color));
+        pdf.setDrawColor(0, 0, 0);
+        pdf.circle(tx + ROSTER_MARKER_DIAM / 2, y + rowHeight / 2, ROSTER_MARKER_DIAM / 2, 'FD');
+        tx += markerW;
+      }
+      pdf.setTextColor(...ROSTER_TEXT_COLOR);
+      pdf.text(text, tx, y + rowHeight / 2, { baseline: 'middle' });
+      cx += w;
+    });
+  };
+  for (let start = 0, page = 0; start < rows.length; start += rowsPerPage, page++) {
+    if (page > 0) pdf.addPage();
+    let y = drawRosterTitle(pdf, title, margin, usableWidth, margin);
+    drawRow(header, y, true, null);
+    y += rowHeight;
+    rows.slice(start, start + rowsPerPage).forEach((r, k) => {
+      drawRow(r, y, false, colors[start + k]);
+      y += rowHeight;
+    });
+  }
+  pdf.save(changeLogExportBaseName() + '.pdf');
+}
+function initChangeLogExport() {
+  document.getElementById('change-log-xlsx-btn').addEventListener('click', exportChangeLogXlsx);
+  document.getElementById('change-log-pdf-btn').addEventListener('click', exportChangeLogPdf);
 }
 /** 交換ペアの色マーカー（丸印）のHTML。対象でなければ空文字を返す。 */
 function swapMarkerHtml(date, level, markers) {
@@ -4545,6 +4687,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initBackup();
   renderBackupStatus();
   initHandoverExport();
+  initChangeLogExport();
   initHistoryPdf();
   initOptions();
   initLeaveForm();

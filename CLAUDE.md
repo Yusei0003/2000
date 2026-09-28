@@ -45,7 +45,7 @@
 1. **テストを通す** — `node tests/run_all.js`（全件成功が必須）
 2. 新しい機能・直した不具合には、**テストを足す**（`tests/*.test.js`）
 3. **仕様書を更新する** — `docs/仕様書.md` の該当節と、末尾「12. 改訂履歴」に1行追加
-   （版番号は直前の続き。現在の最新は **1.48**）
+   （版番号は直前の続き。現在の最新は **1.49**）
 4. **`node build_docs.js`** を実行して `docs-content.js` を作り直す（忘れるとアプリ内の仕様書が古いまま）
 5. 画面の操作が変わったら、`index.html` の「使い方」タブの説明と、マニュアル（`docs/manual/`）も直す
 6. コミット・プッシュ（ブランチ `claude/duty-roster-automation-app-qhozys`）
@@ -70,6 +70,7 @@ node tests/change.test.js  # 1本だけ（先に python3 -m http.server 8899 が
 | `generate.test.js` | 作成 → 決裁チェック → 確定 → ロック・保持 → 引き戻し、手動変更時のルール違反通知 |
 | `change.test.js` | 交代を反映（交換の解釈・警告と確認・行違い・ルール違反の通知、`file://` でも） |
 | `changelog_backup.test.js` | 交代の一覧（4分割・「―」・フィルタ連動）、バックアップの促し・件数・書出・復元 |
+| `changelog_export.test.js` | 交代の一覧のExcel・PDF書出（交換は1行・職員番号・A4横・フィルタ連動）、反映日時が日本時間 |
 
 テストデータは `tests/fixtures.js`（架空の職員）。Playwright は `/opt/node22/lib/node_modules/playwright`、
 Chromium は `/opt/pw-browsers/chromium` を使う。
@@ -118,6 +119,8 @@ Chromium は `/opt/pw-browsers/chromium` を使う。
 | --- | --- |
 | **作業用フォルダ（scratchpad）はセッションをまたぐと消える** | 残すべきものは必ずリポジトリに入れる（一度テスト10本を失った） |
 | Playwright の `setInputFiles` は**日本語ファイル名を無視する** | ASCII名で保存してから渡す |
+| Playwright のダウンロードは**日本語のファイル名が「download」になる**（実際のChromeでは正しい名前） | アプリが付けた名前は `<a download>` の値を横取りして確かめる（`tests/changelog_export.test.js`） |
+| `docs/manual/shots.js` を実行すると `docs/manual/` に作業ファイル（`backup_demo.json` 等）と `shots/` が残る | 使う画像だけ `images/` にコピーし、残りは消す |
 | `select.value = x` では `change` が発火しない | `dispatchEvent(new Event('change'))` を明示する |
 | 結果表のプルダウンは変更のたびに描き直される | 要素は操作の直前に取り直す（古いハンドルは無効） |
 | `page.screenshot({clip})` はビューポートの外が切れる | `scrollIntoView({block:'center'})` してから撮る |
