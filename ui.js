@@ -3865,14 +3865,28 @@ function initHandoverExport() {
  * ファイルサイズが小さく、文字も検索・コピー可能になる）
  * ------------------------------------------------------------ */
 const PDF_FONT_NAME = 'NotoSansJP';
+/** PDFの「変更日時」は年月日だけにする（「2026-09-01 09:00」→「2026-09-01」）。
+ *  Excelから取り込んだ「2026/9/1 9:00」のような書き方も同じ形にそろえる。 */
+function changedDateOnly(text) {
+  if (!text) return '';
+  const s = String(text).trim();
+  const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  return s.split(/[\sT]/)[0];
+}
+/** 確定済み履歴のPDFのファイル名。書き出した日を和暦で付ける（例：日直勤務表_R8.9.28更新.pdf）。 */
+function historyPdfFileName(d = new Date()) {
+  const reiwa = d.getFullYear() - 2018;
+  return `日直勤務表_R${reiwa}.${d.getMonth() + 1}.${d.getDate()}更新.pdf`;
+}
 /** 表の見出し欄は「氏名」で統一する（係長級・主事級の別は表示しない）。 */
 const ROSTER_COLUMNS = [
   { header: '日付', get: (r) => r.date },
   { header: '曜日', get: (r) => WEEKDAY_LABEL[r.weekday] },
   { header: '氏名', get: (r) => r.seniorName || '', level: 'senior' },
-  { header: '変更日時', get: (r) => r.seniorChangedAt || '' },
+  { header: '変更日', get: (r) => changedDateOnly(r.seniorChangedAt) },
   { header: '氏名', get: (r) => r.juniorName || '', level: 'junior' },
-  { header: '変更日時', get: (r) => r.juniorChangedAt || '' },
+  { header: '変更日', get: (r) => changedDateOnly(r.juniorChangedAt) },
 ];
 const ROSTER_PAD_X = 4; // pt（セル内の左パディング）
 const ROSTER_MARKER_DIAM = 6; // pt（交換ペアの色丸マーカーの直径）
@@ -4072,7 +4086,7 @@ function exportPeriodPdfByQuarter(period, rows, filename) {
 }
 function initHistoryPdf() {
   document.getElementById('history-pdf-btn').addEventListener('click', () => {
-    exportRowsToPdf('確定済み履歴', visibleHistory(), '日直勤務表_履歴.pdf');
+    exportRowsToPdf('確定済み履歴', visibleHistory(), historyPdfFileName());
   });
 }
 
