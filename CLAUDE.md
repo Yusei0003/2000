@@ -45,7 +45,7 @@
 1. **テストを通す** — `node tests/run_all.js`（全件成功が必須）
 2. 新しい機能・直した不具合には、**テストを足す**（`tests/*.test.js`）
 3. **仕様書を更新する** — `docs/仕様書.md` の該当節と、末尾「12. 改訂履歴」に1行追加
-   （版番号は直前の続き。現在の最新は **1.50**）
+   （版番号は直前の続き。現在の最新は **1.51**）
 4. **`node build_docs.js`** を実行して `docs-content.js` を作り直す（忘れるとアプリ内の仕様書が古いまま）
 5. 画面の操作が変わったら、`index.html` の「使い方」タブの説明と、マニュアル（`docs/manual/`）も直す
 6. コミット・プッシュ（ブランチ `claude/duty-roster-automation-app-qhozys`）
@@ -72,6 +72,7 @@ node tests/change.test.js  # 1本だけ（先に python3 -m http.server 8899 が
 | `changelog_backup.test.js` | 交代の一覧（4分割・「―」・フィルタ連動）、バックアップの促し・件数・書出・復元 |
 | `changelog_export.test.js` | 交代の一覧のExcel・PDF書出（交換は1行・職員番号・A4横・フィルタ連動）、反映日時が日本時間 |
 | `history_pdf.test.js` | 確定済み履歴のPDF書出（ファイル名「日直勤務表_R8.9.28更新.pdf」・変更日は年月日だけ） |
+| `pdf_quarter.test.js` | 確定済み履歴のPDFのページ分け（前期4〜6月／7〜9月・後期10〜12月／1〜3月、月がページをまたがない、全期間は処理期ごと） |
 
 テストデータは `tests/fixtures.js`（架空の職員）。Playwright は `/opt/node22/lib/node_modules/playwright`、
 Chromium は `/opt/pw-browsers/chromium` を使う。

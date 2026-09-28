@@ -4015,56 +4015,22 @@ function drawRosterPage(pdf, title, rows, layout, swapMarkers, margin) {
     drawRosterEmptyRow(pdf, layout, margin, y);
   }
 }
-/** 行数が多い場合に備え、1ページに収まる行数ごとにページを分けてPDF化する。 */
-function exportRowsToPdf(title, rows, filename) {
-  if (!rows.length) {
-    alert('出力する内容がありません');
-    return;
-  }
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4', compress: true });
-  ensurePdfFont(pdf);
-  const margin = 24;
-  const usableWidth = pdf.internal.pageSize.getWidth() - margin * 2;
-  const usableHeight = pdf.internal.pageSize.getHeight() - margin * 2;
-  const swapMarkers = computeSwapMarkers();
-  const layout = computeRosterLayout(pdf, rows, swapMarkers, usableWidth);
-  const headingHeight = ROSTER_TITLE_FONT_SIZE + ROSTER_TITLE_GAP;
-  const rowsPerPage = Math.max(1, Math.floor((usableHeight - headingHeight - layout.rowHeight) / layout.rowHeight));
-  const chunks = [];
-  for (let i = 0; i < rows.length; i += rowsPerPage) chunks.push(rows.slice(i, i + rowsPerPage));
-  chunks.forEach((chunk, i) => {
-    if (i > 0) pdf.addPage();
-    drawRosterPage(pdf, `${title}　日直勤務表`, chunk, layout, swapMarkers, margin);
-  });
-  pdf.save(filename);
-}
 /** 処理期（前期／後期）の勤務表を、四半期ごとに1ページへ収めてPDF出力する（行数が多い場合は
  *  自動的に縮小して1ページに収める）。
  *  前期：1ページ目=処理期開始から3ヶ月（4〜6月）／2ページ目=残り3ヶ月（7〜9月）。
  *  後期：1ページ目=処理期開始から3ヶ月（10〜12月）／2ページ目=残り3ヶ月（1〜3月）。 */
 function exportPeriodPdfByQuarter(period, rows, filename) {
-  if (!rows.length) {
+  exportPeriodsPdfByQuarter([{ period, rows }], filename);
+}
+/** 処理期ごとに、四半期（3ヶ月）を1ページにしてPDFを作る。groups は [{ period, rows }] 。
+ *  1つの処理期は必ず2ページ（前期：4〜6月／7〜9月、後期：10〜12月／1〜3月）になり、
+ *  同じ月がページをまたぐことはない。処理期が複数あるとき（確定済み履歴の「全期間」等）は、
+ *  古い処理期から順に2ページずつ続ける。 */
+function exportPeriodsPdfByQuarter(groups, filename) {
+  if (!groups.some((g) => g.rows.length)) {
     alert('出力する内容がありません');
     return;
   }
-  // ページの境界は period.startDate から3ヶ月後の日付ではなく、各行の実際の月（暦月）で
-  // 判定する。startDateがちょうど月初でない場合（対象期間を手動で変更した場合等）でも、
-  // ページの見出し（4月〜6月等）と実際に載る行の月が必ず一致するようにするため。
-  const quarterDefs =
-    period.half === 'H1'
-      ? [
-          { label: '4月〜6月', months: [4, 5, 6] },
-          { label: '7月〜9月', months: [7, 8, 9] },
-        ]
-      : [
-          { label: '10月〜12月', months: [10, 11, 12] },
-          { label: '1月〜3月', months: [1, 2, 3] },
-        ];
-  const quarters = quarterDefs.map((qd) => ({
-    label: qd.label,
-    rows: rows.filter((r) => qd.months.includes(parseISO(r.date).getMonth() + 1)),
-  }));
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4', compress: true });
   ensurePdfFont(pdf);
@@ -4073,20 +4039,53 @@ function exportPeriodPdfByQuarter(period, rows, filename) {
   const usableHeight = pdf.internal.pageSize.getHeight() - margin * 2;
   const swapMarkers = computeSwapMarkers();
   const headingHeight = ROSTER_TITLE_FONT_SIZE + ROSTER_TITLE_GAP;
-  quarters.forEach((q, i) => {
-    if (i > 0) pdf.addPage();
-    const layout = fitRosterLayoutToHeight(
-      computeRosterLayout(pdf, q.rows, swapMarkers, usableWidth),
-      q.rows.length,
-      usableHeight - headingHeight
-    );
-    drawRosterPage(pdf, `${period.label}　日直勤務表（${q.label}）`, q.rows, layout, swapMarkers, margin);
+  let pageCount = 0;
+  groups.forEach(({ period, rows }) => {
+    // ページの境界は period.startDate から3ヶ月後の日付ではなく、各行の実際の月（暦月）で
+    // 判定する。startDateがちょうど月初でない場合（対象期間を手動で変更した場合等）でも、
+    // ページの見出し（4月〜6月等）と実際に載る行の月が必ず一致するようにするため。
+    const quarterDefs =
+      period.half === 'H1'
+        ? [
+            { label: '4月〜6月', months: [4, 5, 6] },
+            { label: '7月〜9月', months: [7, 8, 9] },
+          ]
+        : [
+            { label: '10月〜12月', months: [10, 11, 12] },
+            { label: '1月〜3月', months: [1, 2, 3] },
+          ];
+    quarterDefs.forEach((qd) => {
+      const qRows = rows.filter((r) => qd.months.includes(parseISO(r.date).getMonth() + 1));
+      if (pageCount > 0) pdf.addPage();
+      pageCount++;
+      const layout = fitRosterLayoutToHeight(
+        computeRosterLayout(pdf, qRows, swapMarkers, usableWidth),
+        qRows.length,
+        usableHeight - headingHeight
+      );
+      drawRosterPage(pdf, `${period.label}　日直勤務表`, qRows, layout, swapMarkers, margin);
+    });
   });
   pdf.save(filename);
 }
+/** 確定済み履歴の行を処理期ごとに分ける（日付の古い順）。処理期は各行の日付から決める
+ *  （「全期間」「未分類」で書き出すときも、前期・後期の区切りでページを分けるため）。 */
+function groupRowsByPeriod(rows) {
+  const map = new Map();
+  rows
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .forEach((r) => {
+      const { fiscalYear, half } = periodOfDate(parseISO(r.date));
+      const id = periodIdOf(fiscalYear, half);
+      if (!map.has(id)) map.set(id, { period: periodById(id) || buildPeriod(fiscalYear, half), rows: [] });
+      map.get(id).rows.push(r);
+    });
+  return [...map.values()];
+}
 function initHistoryPdf() {
   document.getElementById('history-pdf-btn').addEventListener('click', () => {
-    exportRowsToPdf('確定済み履歴', visibleHistory(), historyPdfFileName());
+    exportPeriodsPdfByQuarter(groupRowsByPeriod(visibleHistory()), historyPdfFileName());
   });
 }
 
