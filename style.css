@@ -753,3 +753,28 @@ select[multiple] {
   font-size: 13px;
   line-height: 1.7;
 }
+
+/* ボタンのアイコン（initButtonIcons で付ける） */
+.btn-with-icon { display: inline-flex; align-items: center; gap: 6px; }
+.btn-svg { width: 16px; height: 16px; flex: none; }
+.btn-danger .btn-svg { width: 13px; height: 13px; }
+
+/* 長い説明文は最初の2行だけ見せる（initHintCollapse で付ける） */
+.hint.is-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-bottom: 2px;
+}
+.hint-more {
+  display: block;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0 0 14px;
+  color: var(--primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.hint-more:hover { text-decoration: underline; }

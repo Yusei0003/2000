@@ -123,8 +123,59 @@ function load(key, fallback) {
     return fallback;
   }
 }
+/** 別のタブ（画面）で同じアプリのデータが変更されたら true。この画面のデータは古いので、保存させない。 */
+let staleByOtherTab = false;
+let lastSaveFailedAlertAt = 0;
 function save(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+  // 古い画面のデータで上書きすると、別のタブでの変更が消えてしまう
+  if (staleByOtherTab) {
+    showStaleDataOverlay();
+    return false;
+  }
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (e) {
+    console.error('save failed', key, e);
+    // 1回の操作で複数の保存が続けて失敗することがあるため、知らせるのは1度だけにする
+    if (Date.now() - lastSaveFailedAlertAt > 3000) {
+      lastSaveFailedAlertAt = Date.now();
+      alert(
+        '保存できませんでした。いま行った変更は、画面を開き直すと消えてしまいます。\n\n' +
+          'ブラウザの保存領域がいっぱいになった可能性があります。すぐに「履歴・確認」タブの' +
+          '「バックアップを作成する」でバックアップを作成してください。\n' +
+          'そのうえで、使わなくなった古い処理期の名簿を削除すると、空きを作れます。'
+      );
+    }
+    return false;
+  }
+}
+/** 別のタブで変更があったことを知らせ、最新のデータで開き直してもらう（閉じられない表示にする）。 */
+function showStaleDataOverlay() {
+  if (document.getElementById('stale-data-overlay')) return;
+  const el = document.createElement('div');
+  el.id = 'stale-data-overlay';
+  el.className = 'modal-backdrop';
+  el.innerHTML = `
+    <div class="modal-box">
+      <h3>別の画面でデータが変更されました</h3>
+      <p style="margin:0 0 10px">このアプリが別のタブ（またはウィンドウ）でも開かれていて、そちらでデータが変更されました。</p>
+      <p class="em-red" style="margin:0 0 10px">この画面のデータは古いため、このまま操作すると、別の画面での変更が消えてしまいます。</p>
+      <p style="margin:0 0 14px"><strong class="hint-do">「再読み込みする」を押して、最新のデータで開き直してください。</strong></p>
+      <div class="row-actions"><button id="stale-reload-btn" class="btn-primary">再読み込みする</button></div>
+    </div>`;
+  document.body.appendChild(el);
+  document.getElementById('stale-reload-btn').addEventListener('click', () => location.reload());
+}
+/** 別のタブでこのアプリのデータ（キーは duty_ で始まる）が書き換わったら、この画面を止める。
+ *  storage イベントは「自分以外のタブ」での変更のときだけ届く。 */
+function initOtherTabGuard() {
+  window.addEventListener('storage', (e) => {
+    if (e.storageArea && e.storageArea !== localStorage) return;
+    if (e.key !== null && !String(e.key).startsWith('duty_')) return;
+    staleByOtherTab = true;
+    showStaleDataOverlay();
+  });
 }
 function uid(prefix) {
   return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
@@ -2120,6 +2171,16 @@ function renderGenResultTable() {
       const level = sel.dataset.level;
       const newId = sel.value || null;
       const s = newId ? staffById(newId) : null;
+      // 同じ日のもう一方の欄に入っている職員は選べない（同じ人が1日に2枠入ってしまう）
+      const otherLevel = level === 'senior' ? 'junior' : 'senior';
+      if (newId && draftResults[idx][otherLevel + 'Id'] === newId) {
+        alert(
+          `${s ? s.name : 'この職員'}さんは、この日の${otherLevel === 'senior' ? '1人目' : '2人目'}に入っています。\n` +
+            '同じ日の1人目と2人目に、同じ職員は選べません。'
+        );
+        sel.value = draftResults[idx][level + 'Id'] || '';
+        return;
+      }
 
       // プルダウンで選んだ職員が既に別の日・別の欄に割り当てられている場合、それが1箇所だけなら
       // 「移動」とみなしてそちらをクリアする（クリアしないと元の割当が残ったまま二重に割り当てられ、
@@ -2374,6 +2435,10 @@ function validateManualPair(seniorRec, juniorRec) {
   }
   if (!seniorRec || !juniorRec) {
     reasons.push('人数不足のため1名のみの割当です');
+    return reasons;
+  }
+  if (seniorRec.id === juniorRec.id) {
+    reasons.push('同じ職員が1人目と2人目の両方に入っています');
     return reasons;
   }
   if (seniorRec.level !== 'senior' && juniorRec.level !== 'senior') {
@@ -3544,6 +3609,15 @@ function openChangeModal(date, level) {
       );
       if (!ok) return;
     }
+    // 交代後の職員が、同じ日のもう一方の欄に入っていないか（同じ人が1日に2枠入ってしまう）
+    const otherIdSameDay = level === 'senior' ? record.juniorId : record.seniorId;
+    if (otherIdSameDay && otherIdSameDay === newId) {
+      alert(
+        `${staffById(newId) ? staffById(newId).name : 'この職員'}さんは、${date} の${level === 'senior' ? '2人目' : '1人目'}に入っています。\n` +
+          '同じ日の1人目と2人目に、同じ職員は入れられません。交代後の氏名を確認してください。'
+      );
+      return;
+    }
     const newStaff = staffById(newId);
     const appliedAt = appliedAtRaw.replace('T', ' ');
     const fromId = level === 'senior' ? record.seniorId : record.juniorId;
@@ -3857,6 +3931,89 @@ function initHandoverExport() {
     const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     downloadBlob('日直勤務表_引継ぎ用.xlsx', new Blob([wbout], { type: 'application/octet-stream' }));
     showToast('引継ぎ用Excelを書き出しました');
+  });
+}
+
+/* ------------------------------------------------------------
+ * ボタンのアイコン（オフラインで動くよう、SVGをここに直接書く）
+ * ------------------------------------------------------------ */
+const BUTTON_ICON_SVG = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+  trash: '<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',
+  upload: '<path d="M12 21V9M7 14l5-5 5 5M5 3h14"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+  table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+  calendar: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/>',
+  spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
+  check: '<path d="M5 12l5 5 9-10"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  save: '<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/>',
+};
+const BUTTON_ICONS = {
+  'period-add-btn': 'plus',
+  'period-copy-btn': 'copy',
+  'period-delete-btn': 'trash',
+  'staff-import-btn': 'upload',
+  'staff-export-btn': 'table',
+  'staff-import-excluded-export-btn': 'table',
+  'staff-excluded-list-export-btn': 'table',
+  'staff-clear-btn': 'trash',
+  'opt-save': 'save',
+  'ev-copy-prev': 'copy',
+  'gen-list-dates': 'calendar',
+  'gen-run': 'spark',
+  'gen-confirm': 'check',
+  'gen-revert': 'undo',
+  'gen-export': 'table',
+  'gen-pdf': 'file',
+  'backup-export-btn': 'download',
+  'history-bulk-delete-btn': 'trash',
+  'history-export-btn': 'table',
+  'history-pdf-btn': 'file',
+  'history-handover-btn': 'download',
+  'change-log-xlsx-btn': 'table',
+  'change-log-pdf-btn': 'file',
+};
+function buttonIconSvg(name) {
+  return `<svg class="btn-svg" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${BUTTON_ICON_SVG[name]}</svg>`;
+}
+/** よく押すボタンに、何をするボタンかを示す小さなアイコンを付ける（文字はそのまま）。 */
+function initButtonIcons() {
+  Object.entries(BUTTON_ICONS).forEach(([id, name]) => {
+    const btn = document.getElementById(id);
+    if (!btn || btn.querySelector('.btn-svg')) return;
+    btn.classList.add('btn-with-icon');
+    btn.insertAdjacentHTML('afterbegin', buttonIconSvg(name));
+  });
+  // 「バックアップから復元」はファイル選択を開くラベル
+  const input = document.getElementById('backup-import-input');
+  const restore = input && input.closest('label');
+  if (restore && !restore.querySelector('.btn-svg')) {
+    restore.classList.add('btn-with-icon');
+    restore.insertAdjacentHTML('afterbegin', buttonIconSvg('upload'));
+  }
+}
+
+/* ------------------------------------------------------------
+ * 長い説明文の折りたたみ（最初の2行だけ見せ、「続きを読む」で全文を開く）
+ * ------------------------------------------------------------ */
+const HINT_COLLAPSE_CHARS = 140;
+function initHintCollapse() {
+  document.querySelectorAll('.tab-panel:not(#panel-help):not(#panel-docs) p.hint').forEach((p) => {
+    if (p.textContent.trim().length <= HINT_COLLAPSE_CHARS || p.dataset.collapsible) return;
+    p.dataset.collapsible = '1';
+    p.classList.add('is-clamped');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'hint-more';
+    btn.textContent = '▼ 続きを読む';
+    btn.addEventListener('click', () => {
+      const open = p.classList.toggle('is-clamped') === false;
+      btn.textContent = open ? '▲ 閉じる' : '▼ 続きを読む';
+    });
+    p.after(btn);
   });
 }
 
@@ -4701,6 +4858,9 @@ document.addEventListener('DOMContentLoaded', () => {
   renderBackupStatus();
   initHandoverExport();
   initChangeLogExport();
+  initOtherTabGuard();
+  initButtonIcons();
+  initHintCollapse();
   initHistoryPdf();
   initOptions();
   initLeaveForm();
