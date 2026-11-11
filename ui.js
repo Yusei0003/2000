@@ -134,6 +134,7 @@ function save(key, value) {
   }
   try {
     localStorage.setItem(key, JSON.stringify(value));
+    scheduleGuideRefresh();
     return true;
   } catch (e) {
     console.error('save failed', key, e);
@@ -149,6 +150,15 @@ function save(key, value) {
     }
     return false;
   }
+}
+/** データが変わったら、やることリストと時期の案内を描き直す（まとめて1回だけ） */
+let guideRefreshTimer = null;
+function scheduleGuideRefresh() {
+  if (guideRefreshTimer) return;
+  guideRefreshTimer = setTimeout(() => {
+    guideRefreshTimer = null;
+    if (typeof renderGuideSteps === 'function') { renderGuideSteps(); renderSeasonBanner(); }
+  }, 0);
 }
 /** 別のタブで変更があったことを知らせ、最新のデータで開き直してもらう（閉じられない表示にする）。 */
 function showStaleDataOverlay() {
@@ -618,6 +628,7 @@ function initPeriodBar() {
 function renderAllForPeriod() {
   loadStaffForCurrentPeriod();
   renderPeriodBar();
+  if (typeof renderGuideSteps === 'function') { renderGuideSteps(); renderSeasonBanner(); }
   renderStaffTable();
   renderStandingRuleList();
   renderLeaveTable();
@@ -3070,6 +3081,86 @@ function initChangeLogExport() {
   document.getElementById('change-log-xlsx-btn').addEventListener('click', exportChangeLogXlsx);
   document.getElementById('change-log-pdf-btn').addEventListener('click', exportChangeLogPdf);
 }
+/* ------------------------------------------------------------
+ * 給与システム取込用CSV（宿日直手当支給調書）
+ * 選んだ月の日直1回につき「職員番号,1,0」を1行並べる（2回入った人は2行。2列目・3列目は給与システムの固定値）
+ * ------------------------------------------------------------ */
+let payrollMonth = null; // 'YYYY-MM'
+/** 確定済み履歴にある月の一覧（新しい順） */
+function payrollMonthOptions() {
+  return [...new Set(history.map((h) => h.date.slice(0, 7)).concat(payrollDefaultMonth()))].sort().reverse();
+}
+/** 既定は先月（その月が終わってから、実際に入った分を出すため） */
+function payrollDefaultMonth() {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - 1);
+  return toISO(d).slice(0, 7);
+}
+/** 選んだ月に日直に入った職員ごとに、回数と担当日をまとめる（職員番号の順） */
+function payrollRows(month) {
+  const byId = new Map();
+  history
+    .filter((h) => h.date.startsWith(month))
+    .forEach((h) => {
+      [h.seniorId, h.juniorId].filter(Boolean).forEach((id) => {
+        if (!byId.has(id)) byId.set(id, { id, dates: [] });
+        byId.get(id).dates.push(h.date);
+      });
+    });
+  return [...byId.values()]
+    .map((r) => {
+      const st = resolveAnyStaff(r.id) || {};
+      return { number: String(st.number || ''), name: st.name || '', count: r.dates.length, dates: r.dates.sort() };
+    })
+    .sort((a, b) => a.number.localeCompare(b.number, 'ja', { numeric: true }));
+}
+/** ファイル名：「R（令和の年）.（月）宿日直手当支給調書.csv」（数字は半角・0を付けない） */
+function payrollFileName(year, month) {
+  return `R${year - 2018}.${month}宿日直手当支給調書.csv`;
+}
+function payrollCsvLines(rows) {
+  return rows.flatMap((r) => r.dates.map(() => `${r.number},1,0`));
+}
+function renderPayroll() {
+  const sel = document.getElementById('payroll-month');
+  if (!sel) return;
+  const months = payrollMonthOptions();
+  if (!payrollMonth || !months.includes(payrollMonth)) payrollMonth = payrollDefaultMonth();
+  sel.innerHTML = months.length
+    ? months.map((m) => `<option value="${m}" ${m === payrollMonth ? 'selected' : ''}>${m.slice(0, 4)}年${Number(m.slice(5))}月</option>`).join('')
+    : '<option value="">（確定済み履歴がありません）</option>';
+  const rows = payrollMonth ? payrollRows(payrollMonth) : [];
+  const tbody = document.getElementById('payroll-tbody');
+  tbody.innerHTML = rows.length
+    ? rows.map((r) => `<tr><td>${escapeHtml(r.number) || '<span class="em-red">番号なし</span>'}</td><td>${escapeHtml(r.name)}</td><td>${r.count}回（${r.count}行）</td><td>${r.dates.map((d) => Number(d.slice(8))).join('日・')}日</td></tr>`).join('')
+    : '<tr><td colspan="4" style="text-align:center;color:var(--muted)">この月の日直はありません</td></tr>';
+  document.getElementById('payroll-csv-text').textContent = payrollCsvLines(rows).join('\n') || '（なし）';
+  const total = rows.reduce((a, r) => a + r.count, 0);
+  document.getElementById('payroll-summary').textContent = rows.length ? `${rows.length}人・延べ${total}回（CSVは${total}行）` : '';
+}
+function initPayrollCsv() {
+  document.getElementById('payroll-month').addEventListener('change', (e) => {
+    payrollMonth = e.target.value;
+    renderPayroll();
+  });
+  document.getElementById('payroll-csv-btn').addEventListener('click', () => {
+    const rows = payrollMonth ? payrollRows(payrollMonth) : [];
+    if (!rows.length) {
+      alert('この月の日直はありません');
+      return;
+    }
+    if (rows.some((r) => !r.number)) {
+      alert('職員番号が分からない職員がいます。名簿を確認してください。');
+      return;
+    }
+    // 給与システムへ取り込むため、見出し行・BOMなしの数字だけのファイルにする
+    const text = payrollCsvLines(rows).join('\r\n') + '\r\n';
+    const [y, m] = payrollMonth.split('-').map(Number);
+    downloadBlob(payrollFileName(y, m), new Blob([text], { type: 'text/csv' }));
+    showToast('給与システム取込用CSVを書き出しました');
+  });
+}
 /** 交換ペアの色マーカー（丸印）のHTML。対象でなければ空文字を返す。 */
 function swapMarkerHtml(date, level, markers) {
   const info = markers.get(date + '|' + level);
@@ -3114,6 +3205,7 @@ function renderHistoryTable() {
     btn.addEventListener('click', () => openChangeModal(btn.dataset.date, btn.dataset.level));
   });
   renderChangeLogTable();
+  renderPayroll();
 }
 function initHistoryPeriodFilter() {
   const sel = document.getElementById('history-period-filter');
@@ -3817,6 +3909,7 @@ function openBackupReminder(actionLabel) {
         <h3>バックアップを作成してください</h3>
         <p style="margin:0 0 10px"><strong>${escapeHtml(actionLabel)}</strong></p>
         <p class="hint" style="margin:0 0 12px">このアプリのデータは<strong class="hint-do">この端末のブラウザの中だけ</strong>に保存されています。ブラウザのデータ消去や端末の故障で消えると、復元できません。</p>
+        ${backupFolderHtml('保存先（ダウンロードしたファイルをここへ移してください）')}
         <div class="backup-state-box">
           <div>前回のバックアップ：${escapeHtml(lastText)}</div>
           <div><strong style="color:var(--danger)">それ以降の変更：${backupState.pendingChanges} 件</strong></div>
@@ -3932,6 +4025,228 @@ function initHandoverExport() {
     downloadBlob('日直勤務表_引継ぎ用.xlsx', new Blob([wbout], { type: 'application/octet-stream' }));
     showToast('引継ぎ用Excelを書き出しました');
   });
+}
+
+/* ------------------------------------------------------------
+ * 初めて使う人への案内（最初の案内・やることリスト・時期の案内・用語の説明）
+ * ------------------------------------------------------------ */
+/** 画面の表示だけに使う設定（畳んだかどうか等）。データではないので duty_ では始めない
+ *  （別のタブでの変更の検知・バックアップの対象にしない）。 */
+const KEY_GUIDE_UI = 'dutyui_guide_v1';
+function loadGuideUi() {
+  try { return JSON.parse(localStorage.getItem(KEY_GUIDE_UI) || '{}'); } catch (e) { return {}; }
+}
+function saveGuideUi(v) {
+  try { localStorage.setItem(KEY_GUIDE_UI, JSON.stringify(v)); } catch (e) { /* 表示用なので失敗しても続ける */ }
+}
+/** 指定したタブを開き、目印の要素までスクロールする */
+function goToTabAndShow(tab, selector) {
+  const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+  if (btn) btn.click();
+  const el = selector && document.querySelector(selector);
+  if (el) {
+    const target = el.closest('.card') || el;
+    setTimeout(() => target.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    target.classList.add('guide-flash');
+    setTimeout(() => target.classList.remove('guide-flash'), 1800);
+  }
+}
+
+/* ---- バックアップの保存先（コピーして使えるように表示する） ---- */
+const BACKUP_FOLDER = 'S:\\1100-総務課\\02-職員係\\050_日直\\日直システム用\\バックアップ';
+function backupFolderHtml(label) {
+  return `<div class="folder-copy">
+      <div class="folder-copy-label">${escapeHtml(label)}</div>
+      <div class="folder-copy-row">
+        <input type="text" class="folder-copy-path" readonly value="${escapeHtml(BACKUP_FOLDER)}" aria-label="バックアップの保存先">
+        <button type="button" class="btn-secondary folder-copy-btn">コピー</button>
+      </div>
+    </div>`;
+}
+/** 保存先をクリップボードへ写す。クリップボードが使えない開き方でも、選択して写す方法で動かす */
+function copyBackupFolder(btn) {
+  const input = btn.closest('.folder-copy').querySelector('.folder-copy-path');
+  const done = () => {
+    btn.textContent = 'コピーしました';
+    setTimeout(() => { btn.textContent = 'コピー'; }, 1800);
+    showToast('保存先をコピーしました。エクスプローラーのアドレス欄に貼り付けてください');
+  };
+  const fallback = () => {
+    input.focus();
+    input.select();
+    try { document.execCommand('copy'); done(); } catch (e) { alert('コピーできませんでした。枠の中の文字を選んで Ctrl+C でコピーしてください。'); }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(BACKUP_FOLDER).then(done, fallback);
+  } else {
+    fallback();
+  }
+}
+/** 画面のどこに置いた保存先でも、「コピー」と枠のクリックが効くようにする（後から出るポップアップも含む） */
+function initBackupFolderCopy() {
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('.folder-copy-btn');
+    if (btn) copyBackupFolder(btn);
+    const input = e.target.closest && e.target.closest('.folder-copy-path');
+    if (input) input.select();
+  });
+  const slot = document.getElementById('backup-folder-slot');
+  if (slot) slot.innerHTML = backupFolderHtml('バックアップの保存先（作成したファイルはここに保存し、復元するときもここから選びます）');
+}
+
+/* ---- 1. 最初の案内 ---- */
+function appDataIsEmpty() {
+  return !history.length && Object.values(periodStaff).every((list) => !list || !list.length);
+}
+function showWelcomeIfEmpty() {
+  if (!appDataIsEmpty() || loadGuideUi().welcomeDone) return;
+  const el = document.createElement('div');
+  el.id = 'welcome-overlay';
+  el.className = 'modal-backdrop';
+  el.innerHTML = `
+    <div class="modal-box welcome-box">
+      <h3>はじめてお使いですか？</h3>
+      <p style="margin:0 0 14px">このパソコンには、まだ日直のデータが入っていません。当てはまるほうを選んでください。</p>
+      <button type="button" class="welcome-choice" id="welcome-restore">
+        <span class="welcome-choice-title">前任者からバックアップファイルを受け取った</span>
+        <span class="welcome-choice-sub">ファイル名が「日直勤務表バックアップ_…json」のファイルです。読み込むと、これまでの名簿・履歴がそのまま使えます。</span>
+      </button>
+      ${backupFolderHtml('バックアップはこのフォルダにあります（コピーして、ファイルを選ぶ画面の上部のアドレス欄に貼り付けると開けます）')}
+      <button type="button" class="welcome-choice" id="welcome-new">
+        <span class="welcome-choice-title">新しく始める（バックアップはない）</span>
+        <span class="welcome-choice-sub">職員名簿のExcelを取り込むところから始めます。</span>
+      </button>
+      <p class="muted" style="margin:12px 0 0">迷ったら、右上の「操作マニュアル」の第1章を読んでください。
+        <button type="button" class="link-btn" id="welcome-later">あとで</button></p>
+    </div>`;
+  document.body.appendChild(el);
+  const done = () => { const g = loadGuideUi(); g.welcomeDone = true; saveGuideUi(g); el.remove(); };
+  document.getElementById('welcome-restore').addEventListener('click', () => {
+    done();
+    goToTabAndShow('history', '#backup-export-btn');
+    document.getElementById('backup-import-input').click();
+  });
+  document.getElementById('welcome-new').addEventListener('click', () => {
+    done();
+    goToTabAndShow('staff', '#staff-xlsx-box');
+  });
+  document.getElementById('welcome-later').addEventListener('click', () => el.remove());
+}
+
+/* ---- 2. やることリスト（選択中の処理期の進み具合） ---- */
+function guideStepsForCurrentPeriod() {
+  const p = currentPeriod();
+  const g = loadGuideUi();
+  const seen = (g.seen && g.seen[p.id]) || {};
+  const sess = genSessions[p.id] || {};
+  const confirmed = sess.status === 'confirmed';
+  return [
+    { label: '処理期を選ぶ', done: true, tab: null },
+    { label: '名簿を取り込む', done: (periodStaff[p.id] || []).length > 0, tab: 'staff', sel: '#staff-xlsx-box' },
+    { label: 'ルールを確認する', done: !!seen.rules || confirmed, tab: 'rules', sel: '#opt-save' },
+    { label: '行事を登録する', done: !!seen.events || confirmed, tab: 'events', sel: '#ev-copy-prev' },
+    { label: '指定日を抽出する', done: (sess.dates || []).length > 0 || confirmed, tab: 'generate', sel: '#gen-list-dates' },
+    { label: '勤務表を作成する', done: (sess.results || []).length > 0 || confirmed, tab: 'generate', sel: '#gen-run' },
+    { label: '決裁・確定する', done: confirmed, tab: 'generate', sel: '#gen-confirm' },
+    { label: 'バックアップを作る', done: confirmed && !(backupState.pendingChanges > 0), tab: 'history', sel: '#backup-export-btn' },
+  ];
+}
+function renderGuideSteps() {
+  const box = document.getElementById('guide-steps');
+  if (!box) return;
+  const p = currentPeriod();
+  const g = loadGuideUi();
+  if (isPastPeriod(p)) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const steps = guideStepsForCurrentPeriod();
+  const nextIdx = steps.findIndex((st) => !st.done);
+  const doneCount = steps.filter((st) => st.done).length;
+  const head = nextIdx < 0
+    ? `<strong>${escapeHtml(p.label)}の勤務表づくりは、すべて済んでいます。</strong>`
+    : `<strong>${escapeHtml(p.label)}のやること</strong>（${doneCount} / ${steps.length}）　次は <strong class="hint-do">「${steps[nextIdx].label}」</strong>`;
+  box.innerHTML = `
+    <div class="guide-head">
+      <div>${head}</div>
+      <div class="row-actions">
+        ${nextIdx >= 0 ? `<button type="button" class="btn-primary guide-next">「${steps[nextIdx].label}」へ進む</button>` : ''}
+        <button type="button" class="link-btn guide-toggle">${g.collapsed ? '▼ 一覧を開く' : '▲ 畳む'}</button>
+      </div>
+    </div>
+    ${g.collapsed ? '' : `<ol class="guide-list">${steps
+      .map((st, i) => `<li class="${st.done ? 'is-done' : i === nextIdx ? 'is-next' : ''}">
+          <button type="button" class="guide-step" data-i="${i}" ${st.tab ? '' : 'disabled'}>
+            <span class="guide-num">${st.done ? '✓' : i + 1}</span><span>${st.label}</span>
+          </button></li>`)
+      .join('')}</ol>`}`;
+  const go = (st) => st && st.tab && goToTabAndShow(st.tab, st.sel);
+  const next = box.querySelector('.guide-next');
+  if (next) next.addEventListener('click', () => go(steps[nextIdx]));
+  box.querySelectorAll('.guide-step').forEach((b) => b.addEventListener('click', () => go(steps[Number(b.dataset.i)])));
+  box.querySelector('.guide-toggle').addEventListener('click', () => {
+    const v = loadGuideUi(); v.collapsed = !v.collapsed; saveGuideUi(v); renderGuideSteps();
+  });
+}
+/** ルール設定・行事管理は「開いて確認した」ことを済みの印にする */
+function markGuideSeen(tab) {
+  if (tab !== 'rules' && tab !== 'events') return;
+  const g = loadGuideUi();
+  const pid = currentPeriod().id;
+  g.seen = g.seen || {};
+  g.seen[pid] = { ...(g.seen[pid] || {}), [tab]: true };
+  saveGuideUi(g);
+  renderGuideSteps();
+}
+
+/* ---- 5. 時期の案内（3月：前期／9月：後期。確定したら出さない） ---- */
+function renderSeasonBanner() {
+  const box = document.getElementById('season-banner');
+  if (!box) return;
+  const today = new Date();
+  const m = today.getMonth() + 1;
+  let target = null;
+  if (m === 3) target = { fiscalYear: today.getFullYear(), half: 'H1', text: '前期（4〜9月）の勤務表を作る時期です。異動後の名簿を取り込んでから作成してください。' };
+  if (m === 9) target = { fiscalYear: today.getFullYear(), half: 'H2', text: '後期（10〜翌3月）の勤務表を作る時期です。' };
+  const id = target && periodIdOf(target.fiscalYear, target.half);
+  const confirmed = id && genSessions[id] && genSessions[id].status === 'confirmed';
+  if (!target || confirmed) { box.classList.add('hidden'); return; }
+  const exists = !!periodById(id);
+  const isCurrent = currentPeriod().id === id;
+  box.innerHTML = `<span class="season-icon">📅</span><span>${target.text}
+      詳しくは操作マニュアルの第2章を見てください。</span>
+    ${isCurrent ? '' : `<button type="button" class="btn-secondary season-go">${exists ? `「${periodLabelOf(target.fiscalYear, target.half)}」を開く` : `「${periodLabelOf(target.fiscalYear, target.half)}」を作る`}</button>`}`;
+  box.classList.remove('hidden');
+  const btn = box.querySelector('.season-go');
+  if (btn) btn.addEventListener('click', () => {
+    if (exists) { switchToPeriod(id); return; }
+    document.getElementById('period-add-btn').click();
+    document.getElementById('period-new-year').value = target.fiscalYear;
+    document.getElementById('period-new-half').value = target.half;
+  });
+}
+
+/* ---- 4. 用語の説明（「？」にカーソルを合わせると出る） ---- */
+const TERM_TEXT = {
+  '処理期': '勤務表を作る半年の区切り。前期＝4〜9月、後期＝10〜翌3月。名簿・ルール・勤務表はすべてこの単位で管理します。',
+  '1人目／2人目': 'その日の日直2名。1人目は必ず係長級（または市民課経験のある主事級）、2人目はどちらの級でも構いません。',
+  '状態': 'OK＝ルールどおり。補足＝目安の範囲内の2回目など。要確認＝ルールを緩めて割り当てた日で、手での見直しが必要。エラー＝2名の枠を埋められなかった日で、必ず手当てが必要。',
+  '交換／交代': '交換＝2人が互いの担当日を入れ替えたもの（1行にまとめ「←→」で表示）。交代＝その日の担当者が別の人に代わっただけのもの（「→」で表示）。',
+};
+function initTermHelp() {
+  document.querySelectorAll('.term[data-term]').forEach((el) => {
+    const t = TERM_TEXT[el.dataset.term];
+    if (!t) return;
+    el.setAttribute('aria-label', `${el.dataset.term}とは`);
+    el.dataset.tip = `${el.dataset.term}：${t}`;
+  });
+}
+
+function initGuide() {
+  initBackupFolderCopy();
+  initTermHelp();
+  renderSeasonBanner();
+  renderGuideSteps();
+  document.querySelectorAll('.tab-btn').forEach((b) => b.addEventListener('click', () => markGuideSeen(b.dataset.tab)));
+  showWelcomeIfEmpty();
 }
 
 /* ------------------------------------------------------------
@@ -4859,6 +5174,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initHandoverExport();
   initChangeLogExport();
   initOtherTabGuard();
+  initPayrollCsv();
+  initGuide();
   initButtonIcons();
   initHintCollapse();
   initHistoryPdf();

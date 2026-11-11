@@ -45,7 +45,7 @@
 1. **テストを通す** — `node tests/run_all.js`（全件成功が必須）
 2. 新しい機能・直した不具合には、**テストを足す**（`tests/*.test.js`）
 3. **仕様書を更新する** — `docs/仕様書.md` の該当節と、末尾「12. 改訂履歴」に1行追加
-   （版番号は直前の続き。現在の最新は **1.53**）
+   （版番号は直前の続き。現在の最新は **1.54**）
 4. **`node build_docs.js`** を実行して `docs-content.js` を作り直す（忘れるとアプリ内の仕様書が古いまま）
 5. 画面の操作が変わったら、`index.html` の「使い方」タブの説明と、マニュアル（`docs/manual/`）も直す
 6. コミット・プッシュ（ブランチ `claude/duty-roster-automation-app-qhozys`）
@@ -74,6 +74,7 @@ node tests/change.test.js  # 1本だけ（先に python3 -m http.server 8899 が
 | `history_pdf.test.js` | 確定済み履歴のPDF書出（ファイル名「日直勤務表_R8.9.28更新.pdf」・変更日は年月日だけ） |
 | `pdf_quarter.test.js` | 確定済み履歴のPDFのページ分け（前期4〜6月／7〜9月・後期10〜12月／1〜3月、月がページをまたがない、全期間は処理期ごと） |
 | `safety_ui.test.js` | 別のタブでの変更を検知して古いタブを止める（`http://`・`file://`）、保存失敗の知らせ、同じ職員を1日に2枠入れない、説明文の折りたたみ、ボタンのアイコン |
+| `payroll_guide.test.js` | 宿日直手当支給調書CSV（1回1行・固定値1,0・ファイル名・既定は先月）、最初の案内・やることリスト・時期の案内（日付を固定して確認）・用語の「？」・タブの番号・保存先のコピー |
 
 テストデータは `tests/fixtures.js`（架空の職員）。Playwright は `/opt/node22/lib/node_modules/playwright`、
 Chromium は `/opt/pw-browsers/chromium` を使う。
@@ -123,6 +124,7 @@ Chromium は `/opt/pw-browsers/chromium` を使う。
 | **作業用フォルダ（scratchpad）はセッションをまたぐと消える** | 残すべきものは必ずリポジトリに入れる（一度テスト10本を失った） |
 | Playwright の `setInputFiles` は**日本語ファイル名を無視する** | ASCII名で保存してから渡す |
 | Playwright のダウンロードは**日本語のファイル名が「download」になる**（実際のChromeでは正しい名前） | アプリが付けた名前は `<a download>` の値を横取りして確かめる（`tests/changelog_export.test.js`） |
+| データが空の状態で開くと「はじめてお使いですか？」が画面を覆う | 空から始めるテスト・撮影では `#welcome-later` を押して閉じてから操作する |
 | `docs/manual/shots.js` を実行すると `docs/manual/` に作業ファイル（`backup_demo.json` 等）と `shots/` が残る | 使う画像だけ `images/` にコピーし、残りは消す |
 | `select.value = x` では `change` が発火しない | `dispatchEvent(new Event('change'))` を明示する |
 | 結果表のプルダウンは変更のたびに描き直される | 要素は操作の直前に取り直す（古いハンドルは無効） |

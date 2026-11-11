@@ -778,3 +778,96 @@ select[multiple] {
   cursor: pointer;
 }
 .hint-more:hover { text-decoration: underline; }
+
+/* 給与システム取込用CSV：左に一覧、右に書き出される中身 */
+.payroll-preview { display: grid; grid-template-columns: 1fr 220px; gap: 14px; align-items: start; }
+.payroll-csv-box { border: 1px solid var(--border); border-radius: 8px; background: var(--soft); padding: 8px 12px; }
+.payroll-csv-title { font-size: 12px; color: var(--soft-text); font-weight: 700; margin-bottom: 4px; }
+.payroll-csv-box pre { margin: 0; font-size: 13px; line-height: 1.6; max-height: 220px; overflow: auto; }
+
+/* 操作マニュアルへの入口（画面右上） */
+.app-header { position: relative; }
+.manual-link {
+  position: absolute; right: 24px; top: 24px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 999px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  color: var(--primary); font-size: 13px; font-weight: 600; text-decoration: none;
+}
+.manual-link:hover { background: var(--soft); }
+.manual-link svg { width: 16px; height: 16px; }
+
+/* 用語の説明「？」 */
+.term {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-left: 4px; border-radius: 50%;
+  background: var(--soft); color: var(--primary); font-size: 11px; font-weight: 700;
+  cursor: help; position: relative; vertical-align: middle;
+}
+.term:hover::after, .term:focus::after {
+  content: attr(data-tip);
+  position: absolute; left: 50%; top: 22px; transform: translateX(-50%); z-index: 50;
+  width: 280px; padding: 8px 10px; border-radius: 8px;
+  background: #12302d; color: #fff; font-size: 12px; font-weight: 400; line-height: 1.6;
+  white-space: normal; text-align: left; box-shadow: 0 6px 18px rgba(0,0,0,.18);
+}
+
+/* 時期の案内 */
+.season-banner {
+  max-width: 1032px; margin: 10px auto 0; padding: 10px 16px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: #fff7e6; border: 1px solid var(--warning-border); border-radius: var(--radius);
+  font-size: 14px; font-weight: 600;
+}
+.season-banner .season-go { margin-left: auto; }
+
+/* やることリスト */
+.guide-steps {
+  max-width: 1032px; margin: 10px auto 0; padding: 12px 16px;
+  background: var(--card-bg); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+  border-radius: var(--radius); font-size: 14px;
+}
+.guide-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.guide-list { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; padding: 0; }
+.guide-step {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); background: #fff; border-radius: 999px;
+  padding: 4px 12px 4px 4px; font-size: 13px; color: var(--muted); cursor: pointer;
+}
+.guide-step:disabled { cursor: default; }
+.guide-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%; background: #e5ecea; color: var(--muted); font-size: 12px; font-weight: 700;
+}
+.guide-list li.is-done .guide-step { color: var(--soft-text); background: var(--soft); border-color: transparent; }
+.guide-list li.is-done .guide-num { background: var(--primary); color: #fff; }
+.guide-list li.is-next .guide-step { color: var(--text); border-color: var(--primary); font-weight: 700; box-shadow: 0 0 0 2px rgba(15,118,110,.15); }
+.guide-list li.is-next .guide-num { background: #fff; color: var(--primary); border: 2px solid var(--primary); }
+.guide-flash { animation: guide-flash 1.8s ease-out; }
+@keyframes guide-flash { 0% { box-shadow: 0 0 0 4px rgba(20,184,166,.6); } 100% { box-shadow: 0 0 0 0 rgba(20,184,166,0); } }
+
+/* 最初の案内 */
+.welcome-box { max-width: 520px; }
+.welcome-choice {
+  display: block; width: 100%; text-align: left; margin-bottom: 10px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: #fff; cursor: pointer;
+}
+.welcome-choice:hover { border-color: var(--primary); background: var(--soft); }
+.welcome-choice-title { display: block; font-weight: 700; color: var(--primary); font-size: 15px; }
+.welcome-choice-sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.season-banner > span:nth-child(2) { flex: 1; min-width: 300px; }
+.season-banner .season-go { margin-left: 0; white-space: nowrap; }
+
+/* バックアップの保存先（コピーできる枠） */
+.folder-copy { margin: 0 0 12px; }
+.folder-copy-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.folder-copy-row { display: flex; gap: 6px; }
+.folder-copy-path {
+  flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px;
+  font-family: "Consolas", "Meiryo", monospace; font-size: 13px; color: var(--text); background: #f8fbfa;
+}
+.folder-copy-btn { white-space: nowrap; }
+
+/* タブの番号（①〜⑤は作業の順番）。使い方・仕様書は右に寄せて手順と分ける */
+.tab-num { margin-right: 3px; font-weight: 700; }
+.tab-btn.tab-ref { margin-left: auto; }

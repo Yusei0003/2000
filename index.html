@@ -8,13 +8,17 @@
 </head>
 <body>
 <header class="app-header">
+  <a id="manual-link" class="manual-link" href="docs/日直勤務表アプリ_操作マニュアル.pdf" target="_blank" rel="noopener">
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>
+    <span>操作マニュアル</span>
+  </a>
   <h1>日直勤務表 自動作成アプリ</h1>
   <p class="subtitle">職員名簿・ルールから日直勤務表（土日祝日・年末年始の当番表）を自動作成します。データはブラウザのlocalStorageに保存されます（サーバー不要）。</p>
 </header>
 
 <div class="period-bar">
   <div class="period-bar-inner">
-    <label class="period-select-label">処理期
+    <label class="period-select-label">処理期<span class="term" tabindex="0" data-term="処理期">？</span>
       <select id="period-select"></select>
     </label>
     <span id="period-range" class="muted"></span>
@@ -41,15 +45,17 @@
     </div>
   </div>
 </div>
+<div id="season-banner" class="season-banner hidden"></div>
+<div id="guide-steps" class="guide-steps hidden"></div>
 <div id="past-period-banner" class="hint past-period-banner hidden">過去の処理期を選択しています。名簿登録・ルール設定・勤務表作成は不要です。<strong>履歴・確認</strong>タブの「Excel勤務実績データの取り込み」で日直割のみ登録できます。</div>
 
 <nav class="tabs">
-  <button class="tab-btn active" data-tab="staff">名簿管理</button>
-  <button class="tab-btn" data-tab="rules">ルール設定</button>
-  <button class="tab-btn" data-tab="events">行事管理</button>
-  <button class="tab-btn" data-tab="generate">勤務表作成</button>
-  <button class="tab-btn" data-tab="history">履歴・確認</button>
-  <button class="tab-btn" data-tab="help">使い方</button>
+  <button class="tab-btn active" data-tab="staff"><span class="tab-num">①</span>名簿管理</button>
+  <button class="tab-btn" data-tab="rules"><span class="tab-num">②</span>ルール設定</button>
+  <button class="tab-btn" data-tab="events"><span class="tab-num">③</span>行事管理</button>
+  <button class="tab-btn" data-tab="generate"><span class="tab-num">④</span>勤務表作成</button>
+  <button class="tab-btn" data-tab="history"><span class="tab-num">⑤</span>履歴・確認</button>
+  <button class="tab-btn tab-ref" data-tab="help">使い方</button>
   <button class="tab-btn" data-tab="docs">仕様書・設計書</button>
 </nav>
 
@@ -328,7 +334,7 @@
       <div id="gen-warning-summary"></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>日付</th><th>曜日</th><th>祝日等</th><th>1人目</th><th>2人目</th><th>状態</th></tr></thead>
+          <thead><tr><th>日付</th><th>曜日</th><th>祝日等</th><th>1人目<span class="term" tabindex="0" data-term="1人目／2人目">？</span></th><th>2人目</th><th>状態<span class="term" tabindex="0" data-term="状態">？</span></th></tr></thead>
           <tbody id="gen-result-tbody"></tbody>
         </table>
       </div>
@@ -356,6 +362,7 @@
       <h2>データのバックアップ</h2>
       <p class="hint">名簿・ルール設定・行事・確定済み履歴・育休期間など、このアプリの全データを1つのファイル（JSON）にまとめて保存・復元できます。<strong class="hint-do">機種変更やブラウザのデータ消去に備えて、定期的にバックアップを作成してください。</strong>勤務表の確定・交代の反映の直後には、その場でバックアップを作成できるポップアップが自動的に表示されます。</p>
       <p class="hint" id="backup-status"></p>
+      <div id="backup-folder-slot"></div>
       <div class="row-actions">
         <button id="backup-export-btn" class="btn-primary">バックアップを作成する</button>
         <label class="btn-secondary" style="display:inline-flex;align-items:center;cursor:pointer;">
@@ -412,10 +419,36 @@
       <p class="hint">「交代を反映」で反映した交代を、新しい順に一覧表示します。表示範囲は上の「確定済み履歴」の表示フィルタと連動します。<strong>2人が互いの担当日を入れ替えた場合は1行にまとめて「←→」で表示します</strong>（確定済み履歴の丸印と同じ色が付きます）。片道の交代は「→」で表示します。<strong class="hint-do">「Excel書出」「PDF書出」を押すと、いま表示している一覧を、職員番号を添えて同じ並び（交換は1行）で書き出します。</strong>PDFには画面と同じ色の丸印が付きます。Excelには色が付かないため、「種別」の列（交換・交代）で区別してください。</p>
       <div class="table-wrap small-table">
         <table>
-          <thead><tr><th>反映日時</th><th>種別</th><th>日付</th><th>氏名</th><th></th><th>日付</th><th>氏名</th><th>申請日時</th></tr></thead>
+          <thead><tr><th>反映日時</th><th>種別<span class="term" tabindex="0" data-term="交換／交代">？</span></th><th>日付</th><th>氏名</th><th></th><th>日付</th><th>氏名</th><th>申請日時</th></tr></thead>
           <tbody id="change-log-tbody"></tbody>
         </table>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header-row">
+        <h2>宿日直手当支給調書（給与システム取込用CSV）</h2>
+        <div class="row-actions">
+          <label style="margin:0;font-size:13px">対象月
+            <select id="payroll-month"></select>
+          </label>
+          <button id="payroll-csv-btn" class="btn-primary">CSVを書き出す</button>
+        </div>
+      </div>
+      <p class="hint">確定済み履歴（変更届による交代を反映した後の内容）から、選んだ月の日直1回につき「職員番号,1,0」の1行を作ります（2回入った人は2行になります。「1,0」は給与システムの固定値です）。<strong class="hint-do">対象月を選び、内容を確認してから「CSVを書き出す」を押してください。</strong>ファイル名は「R8.10宿日直手当支給調書.csv」のように、対象月の令和の年と月が付きます。書き出したファイルを給与システムに取り込みます。</p>
+      <div class="payroll-preview">
+        <div class="table-wrap small-table">
+          <table>
+            <thead><tr><th>職員番号</th><th>氏名</th><th>この月の回数</th><th>担当日</th></tr></thead>
+            <tbody id="payroll-tbody"></tbody>
+          </table>
+        </div>
+        <div class="payroll-csv-box">
+          <div class="payroll-csv-title">書き出される中身</div>
+          <pre id="payroll-csv-text"></pre>
+        </div>
+      </div>
+      <p class="muted" id="payroll-summary"></p>
     </div>
 
     <div class="card">
@@ -551,6 +584,8 @@
         <li><strong>出力：</strong>勤務表・履歴のCSV、PDF（勤務表PDFは処理期の前半3ヶ月・後半3ヶ月を指定ページに分けて出力します。列見出しはいずれも「氏名」に統一）、引継ぎ用Excel（担当交代の際に履歴を丸ごと次の担当者へ渡せます）に対応しています。PDFは表を画像化せず文字・罫線を直接描画する方式のため、ファイルサイズが小さく、PDF内の文字はコピー・検索もできます。</li>
         <li><strong>データのバックアップ（重要）：</strong>データはブラウザ（端末）ごとに保存され、他の端末とは共有されません。「バックアップを作成する」で、名簿・ルール設定・行事・確定済み履歴・除外期間などの<strong>全データを1つのJSONファイル</strong>に書き出せます。<strong>機種変更やブラウザのデータ消去に備えて、定期的に作成してください。</strong>「バックアップから復元」で書き戻せます（古い形式のバックアップにも対応しています）。「データのバックアップ」欄には、前回バックアップした日時とそれ以降の未バックアップの変更件数が常に表示されます。<strong>勤務表を確定したとき、交代を反映したときには、その場でバックアップを作成できるポップアップが自動的に表示されます。</strong>「あとで」を押しても操作は取り消されず、未バックアップの件数として残り続けます。</li>
         <li><strong>複数のタブで開いた場合：</strong>このアプリを2つ以上のタブ（ウィンドウ）で開いていて、どれか1つでデータを変更すると、ほかのタブには「別の画面でデータが変更されました」と表示されます。<strong class="hint-do">「再読み込みする」を押して、最新のデータで開き直してください。</strong>古い画面のまま操作すると別の画面での変更が消えてしまうため、そのタブからは保存しないようになっています。また、保存領域がいっぱいになる等で保存できなかったときは、その旨をお知らせします。すぐにバックアップを作成してください。</li>
+        <li><strong>はじめて使うとき：</strong>データが何も入っていないときは、開いた直後に「はじめてお使いですか？」と表示されます。前任者からバックアップファイルを受け取った場合は上の選択肢を、そうでない場合は「新しく始める」を押してください。<strong class="hint-do">画面上部の「やること」の一覧で、次にすることを確認できます。</strong>「（次の手順）へ進む」を押すと、そのタブの該当する欄へ移ります。タブの①〜⑤は作業の順番です。言葉の横の「？」にカーソルを合わせると、その言葉の説明が出ます。画面右上の「操作マニュアル」から、写真付きの操作マニュアル（PDF）を開けます。3月と9月には、勤務表を作る時期であることを画面上部でお知らせします。バックアップの保存先は「コピー」ボタンで写せます。</li>
+        <li><strong>宿日直手当支給調書：</strong>「履歴・確認」タブの一番下で、対象月（最初は先月）を選んで「CSVを書き出す」を押すと、給与システムに取り込むCSV（例：R8.10宿日直手当支給調書.csv）を保存できます。日直1回につき「職員番号,1,0」の1行で、同じ月に2回入った人は2行になります。交代の反映を済ませてから書き出してください。</li>
         <li><strong>説明文の「続きを読む」：</strong>各タブの長い説明文は最初の2行だけを表示しています。「▼ 続きを読む」で全文を開き、「▲ 閉じる」で畳めます。</li>
         <li><strong>担当を引き継ぐとき：</strong>前任者が「引継ぎ用に書き出す」でExcelを出力して後任者へ渡し、後任者は自分の端末でExcel名簿を取り込んだうえで、そのファイルを「Excel勤務実績データの取り込み」から読み込みます。引継ぎが完了したら、前任者はブラウザの閲覧データ削除でデータを消去してください。</li>
       </ul>

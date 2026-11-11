@@ -97,6 +97,9 @@ const { PERIOD, PERIOD_PREV, SMALL, twoDayHistory, changeText } = require('./fix
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   await page.waitForTimeout(800);
+  // データが空なので「はじめてお使いですか？」が出る。ここでは閉じてから、バックアップ欄で復元する
+  c.ok(await page.$('#welcome-overlay'), 'データを消したのに最初の案内が出ない');
+  await page.click('#welcome-later');
   await page.click('[data-tab="history"]');
   await page.waitForTimeout(300);
   await page.setInputFiles('#backup-import-input', backupFile);

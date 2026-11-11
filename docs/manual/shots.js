@@ -123,6 +123,10 @@ async function shotRange(page, selA, selB, file, maxHeight) {
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   await page.waitForTimeout(900);
+  // データが空のときに出る「はじめてお使いですか？」
+  await shot(page, '#welcome-overlay .modal-box', '1-0_最初の案内.png');
+  await page.click('#welcome-later');
+  await page.waitForTimeout(300);
   await shotRange(page, 'header', 'nav.tabs', '1-1_起動直後.png');
   await page.click('[data-tab="staff"]');
   await page.waitForTimeout(400);
@@ -251,6 +255,17 @@ async function shotRange(page, selA, selB, file, maxHeight) {
     document.querySelectorAll('#history-tbody tr').forEach((tr) => { tr.style.display = ''; });
   });
   await shotCard(page, '#change-log-tbody', '3-7_交代の一覧.png', 460);
+
+  // ========== (E) 第4章：宿日直手当支給調書 ==========
+  console.log('[E] 第4章 宿日直手当支給調書');
+  const payMonth = await page.$eval('#payroll-month', (sel) => {
+    const withData = [...sel.options].map((o) => o.value).filter((v) => v.endsWith('-07'));
+    return withData[0] || sel.value;
+  });
+  await page.selectOption('#payroll-month', payMonth);
+  await page.$eval('#payroll-month', (el) => el.dispatchEvent(new Event('change')));
+  await page.waitForTimeout(300);
+  await shotCard(page, '#payroll-tbody', '4-1_宿日直手当支給調書.png', 560);
 
   console.log('\n完了。ダイアログ:', JSON.stringify(dialogs.map((d) => d.slice(0, 70)), null, 1));
   await browser.close();
