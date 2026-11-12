@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>日直勤務変更 申請手順</title>
+<style>
+  /* 元資料（NotebookLM版）と同じ 16:9 のスライド */
+  @page { size: 297mm 167mm; margin: 0; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: "IPAPGothic", "IPAGothic", sans-serif;
+    color: #15181f; margin: 0; background: #fff;
+  }
+  .slide {
+    width: 297mm; height: 167mm; box-sizing: border-box;
+    padding: 11mm 13mm; page-break-after: always;
+    position: relative; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .slide:last-child { page-break-after: auto; }
+
+  /* ---- 表紙 ---- */
+  .cover { align-items: center; justify-content: center; text-align: center; }
+  .cover h1 { font-size: 40pt; font-weight: 700; margin: 0; letter-spacing: .02em; }
+  .cover h2 { font-size: 24pt; font-weight: 700; margin: 5mm 0 0; }
+  .cover .art { margin-top: 12mm; }
+
+  /* ---- 見出し ---- */
+  h3.t {
+    font-size: 25pt; font-weight: 700; margin: 0; line-height: 1.25;
+  }
+  h3.t.bar { border-left: 6px solid #f3921b; padding-left: 5mm; }
+  p.s {
+    font-size: 16pt; font-weight: 700; margin: 3mm 0 0; line-height: 1.5;
+  }
+  p.s.small { font-size: 14pt; }
+
+  /* ---- 画面写真 ---- */
+  .shot { margin-top: 6mm; text-align: center; flex: 1; min-height: 0; }
+  .shot img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .two { display: flex; align-items: center; justify-content: center; gap: 6mm; flex: 1; min-height: 0; margin-top: 6mm; }
+  .two img { max-height: 100%; max-width: 46%; object-fit: contain; }
+  .two .chev { color: #f3921b; font-size: 30pt; line-height: 1; }
+
+  /* ---- ステップ3の左右組み ---- */
+  .split { display: flex; gap: 8mm; flex: 1; min-height: 0; margin-top: 6mm; align-items: center; }
+  .split .list { width: 76mm; flex: none; }
+  .split .list li {
+    list-style: none; font-size: 14pt; margin-bottom: 7mm; line-height: 1.5;
+  }
+  .split .list li b { color: #f3921b; }
+  .split .list li span { display: block; font-size: 13pt; }
+  .split .list li .caution { color: #c0392b; font-weight: 700; font-size: 12pt; margin-top: 1mm; }
+  .split .pic { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; }
+  .split .pic img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+  /* ---- まとめ ---- */
+  .sum { align-items: center; }
+  .sum h3 { font-size: 27pt; font-weight: 700; margin: 4mm 0 0; }
+  .flow { display: flex; align-items: flex-start; gap: 4mm; margin-top: 16mm; }
+  .flow .i { text-align: center; width: 36mm; }
+  .flow .i svg { display: block; margin: 0 auto 4mm; }
+  .flow .i span { font-size: 14pt; font-weight: 700; }
+  .flow .i.last span { color: #f3921b; }
+  .flow .c { color: #f3c08a; font-size: 26pt; align-self: center; margin-bottom: 8mm; }
+  .sum .end { margin-top: auto; font-size: 15pt; }
+</style>
+</head>
+<body>
+
+<!-- ===== 表紙 ===== -->
+<div class="slide cover">
+  <h1>日直勤務変更 申請手順</h1>
+  <h2>迷わず完了できる5つのステップ</h2>
+  <div class="art">
+    <svg width="230" height="150" viewBox="0 0 230 150" fill="none">
+      <rect x="18" y="20" width="108" height="98" rx="10" stroke="#9aa3ad" stroke-width="6"/>
+      <path d="M45 8v22M99 8v22" stroke="#9aa3ad" stroke-width="6" stroke-linecap="round"/>
+      <path d="M18 52h108M54 52v66M90 52v66M18 85h108" stroke="#9aa3ad" stroke-width="5"/>
+      <circle cx="72" cy="68" r="9" fill="#9aa3ad"/>
+      <path d="M140 42c34 0 52 16 52 34" stroke="#9aa3ad" stroke-width="6" fill="none"/>
+      <path d="M176 24l26 20-26 20z" fill="#9aa3ad"/>
+      <path d="M96 84l0 54 14-15 11 22 13-6-11-22 20-2z" fill="#e0219a" stroke="#fff" stroke-width="4"/>
+    </svg>
+  </div>
+</div>
+
+<!-- ===== ステップ1 ===== -->
+<div class="slide">
+  <h3 class="t">ステップ1: 申請を開始する</h3>
+  <p class="s small">（グループウェア「Garoon」のワークフローを使用します）</p>
+  <p class="s">左上の「申請する」をクリック</p>
+  <div class="shot"><img src="images/garoon/step1.png" alt="ワークフロー（最新一覧）"></div>
+</div>
+
+<!-- ===== ステップ2 ===== -->
+<div class="slide">
+  <h3 class="t">ステップ2：申請フォームを選ぶ</h3>
+  <p class="s">「人事関連」 ＞ 「日直勤務変更」の順にクリック</p>
+  <div class="two">
+    <img src="images/garoon/step2a.png" alt="カテゴリーの選択">
+    <div class="chev">❯</div>
+    <img src="images/garoon/step2b.png" alt="日直勤務変更の選択">
+  </div>
+</div>
+
+<!-- ===== ステップ3 ===== -->
+<div class="slide">
+  <h3 class="t bar">ステップ3: 必要事項を入力する</h3>
+  <p class="s">3つの必須項目を入力し、「経路を設定する &gt;&gt;」をクリック</p>
+  <div class="split">
+    <ul class="list">
+      <li><b>1. 標題</b>：「私用のため」など<span>理由を記載</span></li>
+      <li><b>2. 変更する日付</b>：<span>カレンダーから選択</span><span class="caution">※交代相手が日直に入っている日（自分の担当日ではありません）</span></li>
+      <li><b>3. 交代相手氏名</b>：<span>交代する相手の名前を入力</span></li>
+    </ul>
+    <div class="pic"><img src="images/garoon/step3.png" alt="申請の作成（内容の入力）"></div>
+  </div>
+</div>
+
+<!-- ===== ステップ4 ===== -->
+<div class="slide">
+  <h3 class="t bar">ステップ4: 承認経路を確認する</h3>
+  <p class="s">総務課設定ルートのため、変更せずに「内容を確認する&gt;&gt;」をクリック</p>
+  <div class="shot"><img src="images/garoon/step4.png" alt="申請の作成（経路の設定）"></div>
+</div>
+
+<!-- ===== ステップ5 ===== -->
+<div class="slide">
+  <h3 class="t">ステップ5: 最終確認して申請する</h3>
+  <p class="s">入力内容に間違いがなければ、「申請する」をクリック</p>
+  <div class="shot"><img src="images/garoon/step5.png" alt="申請の作成（内容の確認）"></div>
+</div>
+
+<!-- ===== まとめ ===== -->
+<div class="slide sum">
+  <h3>まとめ：申請フロー全体像</h3>
+  <div class="flow">
+    <div class="i">
+      <svg width="62" height="62" viewBox="0 0 62 62" fill="none">
+        <path d="M18 8l0 42 11-12 9 17 10-5-9-17 16-2z" stroke="#2f7de1" stroke-width="4" fill="none" stroke-linejoin="round"/>
+      </svg>
+      <span>申請する</span>
+    </div>
+    <div class="c">❯</div>
+    <div class="i">
+      <svg width="62" height="62" viewBox="0 0 62 62" fill="none">
+        <path d="M6 14h18l6 7h26v30H6z" fill="#2f7de1"/>
+      </svg>
+      <span>フォーム選択</span>
+    </div>
+    <div class="c">❯</div>
+    <div class="i">
+      <svg width="62" height="62" viewBox="0 0 62 62" fill="none">
+        <rect x="4" y="16" width="54" height="32" rx="4" fill="#2f7de1"/>
+        <path d="M12 25h6M23 25h6M34 25h6M45 25h5M12 34h6M23 34h6M34 34h6M45 34h5M18 42h26" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+      </svg>
+      <span>内容入力</span>
+    </div>
+    <div class="c">❯</div>
+    <div class="i">
+      <svg width="62" height="62" viewBox="0 0 62 62" fill="none">
+        <circle cx="16" cy="14" r="8" fill="#2f7de1"/>
+        <path d="M4 34c0-7 5-11 12-11s12 4 12 11z" fill="#2f7de1"/>
+        <path d="M34 16h16v16M50 32v14H34" stroke="#2f7de1" stroke-width="4" fill="none"/>
+        <rect x="26" y="40" width="14" height="14" rx="2" fill="#2f7de1"/>
+      </svg>
+      <span>経路確認</span>
+    </div>
+    <div class="c">❯</div>
+    <div class="i last">
+      <svg width="62" height="62" viewBox="0 0 62 62" fill="none">
+        <path d="M56 8L6 30l20 7z" fill="#2f7de1"/>
+        <path d="M56 8L26 37l4 17z" fill="#f3921b"/>
+      </svg>
+      <span>申請実行</span>
+    </div>
+  </div>
+  <p class="end">「日直勤務変更」の申請は以上で完了です。</p>
+</div>
+
+</body>
+</html>
